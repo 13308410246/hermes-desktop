@@ -314,8 +314,15 @@ function GatewayContent({
       }
       setGatewayRunning(action !== "stop");
       if (action !== "stop") {
-        gatewayStatusTimeoutRef.current = setTimeout(() => {
-          void loadConfig();
+        gatewayStatusTimeoutRef.current = setTimeout(async () => {
+          const status = await window.hermesAPI.gatewayStatus(profile);
+          if (!mountedRef.current) return;
+          setGatewayRunning(status);
+          if (status) {
+            void loadConfig();
+          } else if (action === "start") {
+            setGatewayError(t("gateway.startExited"));
+          }
           gatewayStatusTimeoutRef.current = null;
         }, 5000);
       }

@@ -176,6 +176,10 @@ Start, Stop and Restart buttons remain disabled while their IPC result is pendin
 
 In-place connection edits reset Gateway state and discard a prior target's late command result and status timer. The configuration listener is removed when the screen unmounts.
 
+### Remote Start post-completion liveness
+
+A completed Remote Start retains the five-second liveness check and reports if the gateway exits immediately afterward. The check is cancelled or ignored when its target screen unmounts.
+
 ## Voice transcription IPC
 
 Speech-to-text IPC sends recorded desktop audio through the Hermes API server, not through the active chat model endpoint.

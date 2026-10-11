@@ -171,6 +171,25 @@ describe("Gateway screen with a selected profile / failing platform list", () =>
     expect(unsubscribe).toHaveBeenCalledOnce();
   });
 
+  // @lat: [[main-process#Main Process#Remote Gateway management#Remote Start post-completion liveness]]
+  it("reports when a completed Remote Start exits during its five-second liveness check", async () => {
+    installApi({ gatewayStatus: vi.fn().mockResolvedValue(false) });
+    render(<Gateway profile="work" remoteMode />);
+    await settle();
+    fireEvent.click(screen.getByText("common.start"));
+    await settle();
+    expect(window.hermesAPI.remoteGatewayAction).toHaveBeenCalledWith(
+      "start",
+      "work",
+    );
+    expect(screen.getByText("gateway.running")).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(screen.getByText("gateway.stopped")).toBeTruthy();
+    expect(screen.getByText("gateway.startExited")).toBeTruthy();
+  });
+
   // @lat: [[main-process#Main Process#Remote Gateway management#Unconfirmed commands remain blocked]]
   it("keeps lifecycle controls blocked after an unconfirmed timeout until a refresh confirms completion", async () => {
     let pending = false;
