@@ -268,8 +268,8 @@ async function spawnGatewayAction(
         typeof error === "object" && error !== null && "statusCode" in error
           ? error.statusCode
           : undefined;
-      // Structured refusals prove no command was admitted. Network/5xx/HTML
-      // failures remain uncertain and must retain the reservation.
+      // Explicit refusal statuses prove rejection even with a non-JSON body.
+      // Network errors, 5xx and malformed success responses remain uncertain.
       if (
         typeof statusCode === "number" &&
         [400, 401, 403, 404, 405, 409, 422, 429].includes(statusCode)
