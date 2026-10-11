@@ -198,6 +198,10 @@ When an uncertain Stop or Restart later exits unsuccessfully, Gateway replaces t
 
 Beginning a new action invalidates earlier renderer refreshes. Delayed idle or failure replies cannot release its pending controls, clear its uncertainty explanation or overwrite it with an older command's error.
 
+### Healthy Remote Gateway load
+
+A healthy Remote fixture provides the typed command-status bridge, shows running status and enabled controls without a load warning, and never reads or displays the desktop's local API server key.
+
 ## Voice transcription IPC
 
 Speech-to-text IPC sends recorded desktop audio through the Hermes API server, not through the active chat model endpoint.
