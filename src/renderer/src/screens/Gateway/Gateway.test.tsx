@@ -45,6 +45,7 @@ describe("Gateway screen recovery controls", () => {
           message: null,
         }),
         openExternal: vi.fn().mockResolvedValue(true),
+        onConnectionConfigChanged: vi.fn().mockReturnValue(() => {}),
       },
     });
   });

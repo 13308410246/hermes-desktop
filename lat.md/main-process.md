@@ -72,9 +72,11 @@ Messaging platform availability combines credentials from `.env` with an optiona
 
 The Remote Gateway screen controls the server's gateway and messaging platforms through authenticated, profile-scoped dashboard requests.
 
-[[src/main/remote-gateway.ts#remoteGatewayStatus]] reads liveness from `/api/status`; Start, Stop and Restart submit server actions and the screen rechecks status after startup. Action acceptance is distinct from liveness, and server refusals remain errors.
+[[src/main/remote-gateway.ts#remoteGatewayStatus]] reads liveness from `/api/status`. Lifecycle commands capture a connection and explicit default or named profile, then await their matching action PID's successful exit and the requested gateway state. Restart also requires a changed live gateway PID or an observed stopped-to-running transition, because command exit can precede the restart handoff.
 
-[[src/renderer/src/screens/Gateway/Gateway.tsx#Gateway]] keeps successful gateway status even if platform settings fail, hides desktop-local API key controls in Remote mode, and cancels pending status timers on unmount. Layout keys it by connection and profile.
+Commands for one remote URL and profile cannot overlap while completion is pending. The four-minute confirmation budget allows server-side draining; timeout reports unconfirmed completion without cancelling the server command. Status authentication errors, invalid JSON and replaced action records cannot prove completion.
+
+[[src/renderer/src/screens/Gateway/Gateway.tsx#Gateway]] keeps successful status when platform settings fail, hides local API key controls in Remote mode, and cancels pending status timers on unmount. Connection, profile, mode and configuration revisions reset its state; commands stay disabled until IPC confirms completion.
 
 [[src/renderer/src/screens/Layout/useRemoteOnlyMode.ts#useRemoteOnlyMode]] refreshes mode after connection or configuration changes, rejects late answers from earlier targets, and hides local mutation controls while the new target is unresolved.
 
@@ -93,6 +95,34 @@ Start or Restart promises that settle after Gateway unmount cannot schedule stat
 ### Renderer mode transitions
 
 Switching connections on the same screen refreshes its Remote restrictions. Outdated mode replies cannot undo a newer answer, and in-place configuration changes invalidate prior local-control permissions until resolved.
+
+### Keyless lifecycle compatibility
+
+Explicit and resolved auto keyless token dashboards retain scoped JSON status, Start, Stop and Restart requests. OAuth or auth-probe failures never trigger anonymous requests, and HTML responses cannot become successful completion.
+
+### Lifecycle completion and overlap
+
+Stop remains pending until its matching command exits successfully and the gateway is stopped. A concurrent command for that remote profile is rejected before another mutation is submitted.
+
+### Restart handoff evidence
+
+A finished restart command with the old gateway still alive remains pending. A replacement live PID or observed stopped-to-running transition proves the requested handoff completed.
+
+### Strict completion status
+
+Status authentication failures and unknown response shapes cannot be interpreted as a stopped gateway when confirming Stop.
+
+### Lifecycle target snapshot
+
+Changing connection configuration during an accepted command cannot retarget its completion polls or credentials; they retain the captured server and profile.
+
+### Pending lifecycle controls
+
+Start, Stop and Restart buttons remain disabled while their IPC result is pending, so server action admission does not release controls before completion.
+
+### Gateway target resets
+
+In-place connection edits reset Gateway state and discard a prior target's late command result and status timer. The configuration listener is removed when the screen unmounts.
 
 ## Voice transcription IPC
 

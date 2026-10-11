@@ -2112,7 +2112,7 @@ export function registerIpcHandlers(context: IpcContext): void {
       const result = await remoteStartGateway(profile);
       return {
         success: result.success,
-        running: false,
+        running: result.success,
         ...(result.error ? { error: result.error } : {}),
       };
     }

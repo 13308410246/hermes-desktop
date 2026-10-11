@@ -30,6 +30,7 @@ function installApi(overrides: Record<string, unknown> = {}): void {
         .fn()
         .mockResolvedValue({ platforms: [], message: null }),
       openExternal: vi.fn(),
+      onConnectionConfigChanged: vi.fn().mockReturnValue(() => {}),
       ...overrides,
     },
   });
@@ -82,6 +83,83 @@ describe("Gateway screen with a selected profile / failing platform list", () =>
     fireEvent.click(screen.getByText("common.stop"));
     await settle();
     expect(window.hermesAPI.stopGateway).toHaveBeenCalledWith("work");
+  });
+
+  // @lat: [[main-process#Main Process#Remote Gateway management#Pending lifecycle controls]]
+  it.each(["start", "stop", "restart"])(
+    "keeps %s controls disabled until IPC confirms completion",
+    async (action) => {
+      let resolve!: (value: unknown) => void;
+      const pending = new Promise((r) => {
+        resolve = r;
+      });
+      installApi({
+        gatewayStatus: vi.fn().mockResolvedValue(action !== "start"),
+        [`${action}Gateway`]: vi.fn().mockReturnValue(pending),
+      });
+      render(<Gateway profile="work" remoteMode />);
+      await settle();
+      const commandButton = screen
+        .getByText(
+          action === "restart" ? "gateway.restart" : `common.${action}`,
+        )
+        .closest("button") as HTMLButtonElement;
+      fireEvent.click(commandButton);
+      await settle();
+      expect(commandButton.disabled).toBe(true);
+      const restartButton = screen
+        .queryByText("gateway.restart")
+        ?.closest("button");
+      if (restartButton) expect(restartButton.disabled).toBe(true);
+      await act(async () => {
+        resolve(action === "start" ? { success: true, running: true } : true);
+        await pending;
+      });
+      expect(
+        screen.getByText(
+          action === "stop" ? "gateway.stopped" : "gateway.running",
+        ),
+      ).toBeTruthy();
+    },
+  );
+
+  // @lat: [[main-process#Main Process#Remote Gateway management#Gateway target resets]]
+  it("resets on same-ID configuration edits and ignores the old command's late result", async () => {
+    let changed!: () => void;
+    let resolve!: (value: unknown) => void;
+    const pending = new Promise((r) => {
+      resolve = r;
+    });
+    const unsubscribe = vi.fn();
+    installApi({
+      gatewayStatus: vi.fn().mockResolvedValue(false),
+      startGateway: vi.fn().mockReturnValue(pending),
+      onConnectionConfigChanged: vi.fn().mockImplementation((callback) => {
+        changed = callback;
+        return unsubscribe;
+      }),
+    });
+    const { unmount } = render(<Gateway profile="work" remoteMode />);
+    await settle();
+    fireEvent.click(screen.getByText("common.start"));
+    await act(async () => {
+      changed();
+    });
+    await settle();
+    const callsBefore = (
+      window.hermesAPI.gatewayStatus as ReturnType<typeof vi.fn>
+    ).mock.calls.length;
+    await act(async () => {
+      resolve({ success: true, running: true });
+      await pending;
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6000);
+    });
+    expect(screen.getByText("gateway.stopped")).toBeTruthy();
+    expect(window.hermesAPI.gatewayStatus).toHaveBeenCalledTimes(callsBefore);
+    unmount();
+    expect(unsubscribe).toHaveBeenCalledOnce();
   });
 
   // @lat: [[main-process#Main Process#Remote Gateway management#Pending actions after teardown]]

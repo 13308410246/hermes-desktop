@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useI18n } from "../../components/useI18n";
 import BrandLogo from "../../components/common/BrandLogo";
+import { useConnectionTargetRevision } from "../../hooks/useConnectionTargetRevision";
 import type {
   MessagingEnvVarInfo,
   MessagingPlatformInfo,
@@ -27,13 +28,12 @@ import type {
 type DraftValues = Record<string, Record<string, string>>;
 type PlatformMessage = Record<string, MessagingPlatformTestResponse | null>;
 
-function Gateway({
+type GatewayProps = { profile?: string; remoteMode?: boolean };
+
+function GatewayContent({
   profile,
   remoteMode = false,
-}: {
-  profile?: string;
-  remoteMode?: boolean;
-}): React.JSX.Element {
+}: GatewayProps): React.JSX.Element {
   const { t } = useI18n();
   const [gatewayRunning, setGatewayRunning] = useState(false);
   const [gatewayBusy, setGatewayBusy] = useState(false);
@@ -177,13 +177,15 @@ function Gateway({
     if (gatewayRunning) {
       try {
         await window.hermesAPI.stopGateway(profile);
+        if (!mountedRef.current) return;
         setGatewayRunning(false);
       } catch (err) {
+        if (!mountedRef.current) return;
         setGatewayError(
           err instanceof Error ? err.message : t("gateway.stopFailed"),
         );
       } finally {
-        setGatewayBusy(false);
+        if (mountedRef.current) setGatewayBusy(false);
       }
     } else {
       try {
@@ -217,12 +219,13 @@ function Gateway({
           gatewayStatusTimeoutRef.current = null;
         }, 5000);
       } catch (err) {
+        if (!mountedRef.current) return;
         setGatewayRunning(false);
         setGatewayError(
           err instanceof Error ? err.message : t("gateway.startFailed"),
         );
       } finally {
-        setGatewayBusy(false);
+        if (mountedRef.current) setGatewayBusy(false);
       }
     }
   }
@@ -240,6 +243,7 @@ function Gateway({
       setGatewayRunning(restarted);
       if (!restarted) {
         await loadConfig();
+        if (!mountedRef.current) return;
         setGatewayError(t("gateway.restartFailed"));
       } else {
         gatewayStatusTimeoutRef.current = setTimeout(async () => {
@@ -253,10 +257,12 @@ function Gateway({
         }, 5000);
       }
     } catch {
+      if (!mountedRef.current) return;
       await loadConfig();
+      if (!mountedRef.current) return;
       setGatewayError(t("gateway.restartFailed"));
     } finally {
-      setGatewayBusy(false);
+      if (mountedRef.current) setGatewayBusy(false);
     }
   }
 
@@ -1023,4 +1029,12 @@ function platformStateLabel(
   return { icon: "ok", label: t("gateway.states.configured"), tone: "ok" };
 }
 
-export default Gateway;
+export default function Gateway(props: GatewayProps): React.JSX.Element {
+  const revision = useConnectionTargetRevision();
+  return (
+    <GatewayContent
+      key={`${props.profile || "default"}:${revision}:${!!props.remoteMode}`}
+      {...props}
+    />
+  );
+}
