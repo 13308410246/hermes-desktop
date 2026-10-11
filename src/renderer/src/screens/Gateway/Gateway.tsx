@@ -88,16 +88,16 @@ function GatewayContent({
             : Promise.resolve(false),
         ]);
       if (!mountedRef.current) return;
-      setRemoteCommandPending(
-        pendingResult.status === "fulfilled" ? pendingResult.value : remoteMode,
-      );
+      const commandPending =
+        pendingResult.status === "fulfilled" ? pendingResult.value : remoteMode;
+      setRemoteCommandPending(commandPending);
       if (statusResult.status === "fulfilled") {
         const gwStatus = statusResult.value;
         setGatewayRunning(gwStatus);
         // Clear stale start-failure banners once the gateway is confirmed up,
         // but keep an explicit restart failure visible: a failed recovery can
         // leave the old gateway running while still needing user attention.
-        if (gwStatus) {
+        if (gwStatus && !commandPending) {
           setGatewayError((current) =>
             current === t("gateway.restartFailed") ? current : null,
           );

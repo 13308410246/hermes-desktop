@@ -110,7 +110,7 @@ Before submitting a lifecycle mutation, desktop checks the server's global Start
 
 ### Unconfirmed commands remain blocked
 
-An unconfirmed timeout keeps the accepted operation and Gateway controls blocked. Periodic or manual read-only refresh releases them only after matching completion evidence or a known terminal command failure.
+An unconfirmed timeout keeps the operation, controls and error pending. Read-only refresh retains that explanation while the command is unknown or pending and releases controls only on matching completion or known terminal failure.
 
 ### Uncertain dispatch and explicit refusals
 

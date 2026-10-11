@@ -188,6 +188,18 @@ describe("Gateway screen with a selected profile / failing platform list", () =>
         "Completion unconfirmed; server may still be processing",
       ),
     ).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000);
+    });
+    expect(
+      screen.getByText(
+        "Completion unconfirmed; server may still be processing",
+      ),
+    ).toBeTruthy();
+    expect(
+      (screen.getByText("common.stop").closest("button") as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
     pending = false;
     fireEvent.click(screen.getByText("gateway.refresh"));
     await settle();
@@ -195,6 +207,11 @@ describe("Gateway screen with a selected profile / failing platform list", () =>
       (screen.getByText("common.stop").closest("button") as HTMLButtonElement)
         .disabled,
     ).toBe(false);
+    expect(
+      screen.queryByText(
+        "Completion unconfirmed; server may still be processing",
+      ),
+    ).toBeNull();
   });
 
   // @lat: [[main-process#Main Process#Remote Gateway management#Pending actions after teardown]]
