@@ -58,6 +58,8 @@ function GatewayContent({
   );
 
   const mountedRef = useRef(false);
+  const gatewayErrorUnconfirmedRef = useRef(false);
+  const gatewayErrorTerminalRef = useRef(false);
 
   // A pending "check again in 5 s" must not outlive the screen (or the profile
   // it was started for): it would write that profile's status into a page that
@@ -94,13 +96,18 @@ function GatewayContent({
       if (statusResult.status === "fulfilled") {
         const gwStatus = statusResult.value;
         setGatewayRunning(gwStatus);
-        // Clear stale start-failure banners once the gateway is confirmed up,
-        // but keep an explicit restart failure visible: a failed recovery can
-        // leave the old gateway running while still needing user attention.
-        if (gwStatus && !commandPending) {
+        // Completed uncertainty clears even after Stop leaves the gateway down.
+        // A healthy gateway clears stale Start errors, while terminal Remote
+        // Stop/Restart failures remain visible until the next explicit action.
+        if (
+          !commandPending &&
+          (gatewayErrorUnconfirmedRef.current ||
+            (gwStatus && !gatewayErrorTerminalRef.current))
+        ) {
           setGatewayError((current) =>
             current === t("gateway.restartFailed") ? current : null,
           );
+          gatewayErrorUnconfirmedRef.current = false;
         }
       }
       if (platformsResult.status === "fulfilled") {
@@ -184,6 +191,8 @@ function GatewayContent({
     }
     setGatewayBusy(true);
     setGatewayError(null);
+    gatewayErrorUnconfirmedRef.current = false;
+    gatewayErrorTerminalRef.current = false;
     if (gatewayRunning) {
       try {
         await window.hermesAPI.stopGateway(profile);
@@ -191,6 +200,7 @@ function GatewayContent({
         setGatewayRunning(false);
       } catch (err) {
         if (!mountedRef.current) return;
+        gatewayErrorTerminalRef.current = remoteMode;
         setGatewayError(
           err instanceof Error ? err.message : t("gateway.stopFailed"),
         );
@@ -249,6 +259,8 @@ function GatewayContent({
     }
     setGatewayBusy(true);
     setGatewayError(null);
+    gatewayErrorUnconfirmedRef.current = false;
+    gatewayErrorTerminalRef.current = false;
     try {
       const restarted = await window.hermesAPI.restartGateway(profile);
       if (!mountedRef.current) return;
@@ -256,6 +268,7 @@ function GatewayContent({
       if (!restarted) {
         await loadConfig();
         if (!mountedRef.current) return;
+        gatewayErrorTerminalRef.current = remoteMode;
         setGatewayError(t("gateway.restartFailed"));
       } else {
         gatewayStatusTimeoutRef.current = setTimeout(async () => {
@@ -272,6 +285,7 @@ function GatewayContent({
       if (!mountedRef.current) return;
       await loadConfig();
       if (!mountedRef.current) return;
+      gatewayErrorTerminalRef.current = remoteMode;
       setGatewayError(
         remoteMode && err instanceof Error
           ? err.message
@@ -287,9 +301,17 @@ function GatewayContent({
     if (!remoteMode || !mountedRef.current) return;
     try {
       const pending = await window.hermesAPI.gatewayCommandPending(profile);
-      if (mountedRef.current) setRemoteCommandPending(pending);
+      if (mountedRef.current) {
+        setRemoteCommandPending(pending);
+        gatewayErrorUnconfirmedRef.current = pending;
+        if (pending) gatewayErrorTerminalRef.current = false;
+      }
     } catch {
-      if (mountedRef.current) setRemoteCommandPending(true);
+      if (mountedRef.current) {
+        setRemoteCommandPending(true);
+        gatewayErrorUnconfirmedRef.current = true;
+        gatewayErrorTerminalRef.current = false;
+      }
     }
   }
 

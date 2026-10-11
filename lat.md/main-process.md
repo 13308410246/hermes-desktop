@@ -104,6 +104,10 @@ Explicit and resolved auto keyless token dashboards retain scoped JSON status, S
 
 Keyless token POST refusals retain their HTTP status so an explicit rejection releases the admission lock. A later valid command can be tracked normally, including auto-detected token dashboards.
 
+### Non-JSON refusals retain HTTP status
+
+Empty or HTML refusal bodies preserve their HTTP status and release the rejected keyless admission. Malformed successful POST responses remain uncertain because the action may have been accepted without a trackable receipt.
+
 ### Remote restart failure explanation
 
 Remote restart IPC forwards the server's failure reason to Gateway. Unconfirmed-command explanations remain visible with blocked controls through status refresh and clear after confirmed reconciliation.
@@ -119,6 +123,12 @@ Before submitting a lifecycle mutation, desktop checks the server's global Start
 ### Unconfirmed commands remain blocked
 
 An unconfirmed timeout keeps the operation, controls and error pending. Read-only refresh retains that explanation while the command is unknown or pending and releases controls only on matching completion or known terminal failure.
+
+After confirmed Stop reconciliation, the old uncertainty explanation clears even though the gateway is stopped. Ordinary terminal errors retain their own failure messages.
+
+### Terminal Gateway failure remains visible
+
+A genuine terminal Remote Stop or Restart failure remains visible when refresh reports either stopped or running. Only explanations marked as uncertain are cleared by delayed completion reconciliation.
 
 ### Uncertain dispatch and explicit refusals
 

@@ -519,4 +519,75 @@ describe("remote gateway lifecycle", () => {
     );
     expect((await remoteStopGateway()).success).toBe(false);
   });
+
+  // @lat: [[main-process#Main Process#Remote Gateway management#Non-JSON refusals retain HTTP status]]
+  it.each([
+    ["token", 403],
+    ["token", 429],
+    ["auto", 403],
+    ["auto", 429],
+  ])(
+    "releases a keyless %s non-JSON HTTP%s refusal before a valid retry",
+    async (authMode, status) => {
+      state.connection = {
+        ...state.connection,
+        apiKey: "",
+        remoteAuthMode: String(authMode),
+      };
+      request.mockRejectedValue(
+        new Error("Remote Hermes dashboard token is not configured."),
+      );
+      let refused = true;
+      const fetchMock = vi
+        .fn()
+        .mockImplementation(
+          async (url: string, options: { method: string }) => {
+            const path = new URL(url).pathname;
+            if (options.method === "POST" && refused)
+              return new Response(
+                status === 403 ? "" : "<html>Rate limited</html>",
+                { status: Number(status) },
+              );
+            return new Response(JSON.stringify(immediateRoute(path)), {
+              status: 200,
+            });
+          },
+        );
+      vi.stubGlobal("fetch", fetchMock);
+      expect(await remoteStartGateway("work")).toEqual({
+        success: false,
+        error: `HTTP ${status}`,
+      });
+      expect(await remoteGatewayCommandPending("work")).toBe(false);
+      refused = false;
+      expect(await remoteStartGateway("work")).toEqual({ success: true });
+      expect(
+        fetchMock.mock.calls.filter((call) => call[1].method === "POST"),
+      ).toHaveLength(2);
+    },
+  );
+
+  it("retains uncertainty when a keyless lifecycle POST returns malformed success JSON", async () => {
+    state.connection = { ...state.connection, apiKey: "" };
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(
+        async (url: string, options: { method: string }) =>
+          new Response(
+            options.method === "POST"
+              ? "<html>Unknown admission</html>"
+              : JSON.stringify(immediateRoute(new URL(url).pathname)),
+            { status: 200 },
+          ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    expect((await remoteStartGateway("work")).success).toBe(false);
+    await expect(remoteGatewayCommandPending("work")).rejects.toThrow(
+      "accepted action PID is unknown",
+    );
+    expect((await remoteStopGateway("work")).success).toBe(false);
+    expect(
+      fetchMock.mock.calls.filter((call) => call[1].method === "POST"),
+    ).toHaveLength(1);
+  });
 });

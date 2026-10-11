@@ -49,13 +49,16 @@ async function gatewayJson<T>(
         signal: AbortSignal.timeout(timeoutMs),
       },
     );
-    const data = await response.json();
-    if (!response.ok)
+    if (!response.ok) {
+      // Refusal headers prove rejection even when a proxy returns an empty or
+      // HTML body. Parsing failures must not erase that admission evidence.
+      const data = await response.json().catch(() => undefined);
       throw Object.assign(
-        new Error(data.error || data.detail || `HTTP ${response.status}`),
+        new Error(data?.error || data?.detail || `HTTP ${response.status}`),
         { statusCode: response.status },
       );
-    return data as T;
+    }
+    return (await response.json()) as T;
   };
   if (connection.remoteAuthMode === "token" && !connection.apiKey?.trim()) {
     return anonymousRequest();

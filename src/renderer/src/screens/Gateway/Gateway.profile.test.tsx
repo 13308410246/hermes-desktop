@@ -166,7 +166,9 @@ describe("Gateway screen with a selected profile / failing platform list", () =>
   // @lat: [[main-process#Main Process#Remote Gateway management#Unconfirmed commands remain blocked]]
   it("keeps lifecycle controls blocked after an unconfirmed timeout until a refresh confirms completion", async () => {
     let pending = false;
+    let running = true;
     installApi({
+      gatewayStatus: vi.fn().mockImplementation(async () => running),
       gatewayCommandPending: vi.fn().mockImplementation(async () => pending),
       stopGateway: vi.fn().mockImplementation(async () => {
         pending = true;
@@ -201,17 +203,83 @@ describe("Gateway screen with a selected profile / failing platform list", () =>
         .disabled,
     ).toBe(true);
     pending = false;
+    running = false;
     fireEvent.click(screen.getByText("gateway.refresh"));
     await settle();
     expect(
-      (screen.getByText("common.stop").closest("button") as HTMLButtonElement)
+      (screen.getByText("common.start").closest("button") as HTMLButtonElement)
         .disabled,
     ).toBe(false);
+    expect(screen.getByText("gateway.stopped")).toBeTruthy();
     expect(
       screen.queryByText(
         "Completion unconfirmed; server may still be processing",
       ),
     ).toBeNull();
+  });
+
+  // @lat: [[main-process#Main Process#Remote Gateway management#Terminal Gateway failure remains visible]]
+  it.each([true, false])(
+    "preserves a genuine terminal Stop failure when a later refresh reports running=%s",
+    async (afterFailureRunning) => {
+      let running = true;
+      installApi({
+        gatewayStatus: vi.fn().mockImplementation(async () => running),
+        stopGateway: vi.fn().mockImplementation(async () => {
+          running = afterFailureRunning;
+          throw new Error("Remote gateway stop failed (exit 1).");
+        }),
+      });
+      render(<Gateway profile="work" remoteMode />);
+      await settle();
+      fireEvent.click(screen.getByText("common.stop"));
+      await settle();
+      fireEvent.click(screen.getByText("gateway.refresh"));
+      await settle();
+      expect(
+        screen.getByText(
+          afterFailureRunning ? "gateway.running" : "gateway.stopped",
+        ),
+      ).toBeTruthy();
+      expect(
+        screen.getByText("Remote gateway stop failed (exit 1)."),
+      ).toBeTruthy();
+      expect(
+        (
+          screen
+            .getByText(afterFailureRunning ? "common.stop" : "common.start")
+            .closest("button") as HTMLButtonElement
+        ).disabled,
+      ).toBe(false);
+    },
+  );
+
+  it("preserves a genuine remote Restart failure when the old gateway remains running", async () => {
+    installApi({
+      restartGateway: vi
+        .fn()
+        .mockRejectedValue(
+          new Error("Remote gateway restart failed (exit 1)."),
+        ),
+    });
+    render(<Gateway profile="work" remoteMode />);
+    await settle();
+    fireEvent.click(screen.getByText("gateway.restart"));
+    await settle();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000);
+    });
+    expect(screen.getByText("gateway.running")).toBeTruthy();
+    expect(
+      screen.getByText("Remote gateway restart failed (exit 1)."),
+    ).toBeTruthy();
+    expect(
+      (
+        screen
+          .getByText("gateway.restart")
+          .closest("button") as HTMLButtonElement
+      ).disabled,
+    ).toBe(false);
   });
 
   // @lat: [[main-process#Main Process#Remote Gateway management#Pending actions after teardown]]
