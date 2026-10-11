@@ -19,6 +19,7 @@ vi.mock("./remote-api", () => ({ remoteDashboardRequestJson: request }));
 
 import {
   remoteGatewayStatus,
+  remoteGatewayCommandPending,
   remoteRestartGateway,
   remoteStartGateway,
   remoteStopGateway,
@@ -56,13 +57,15 @@ function completed(action: keyof typeof actions): void {
   });
 }
 
+let testPort = 9119;
+
 describe("remote gateway lifecycle", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     request.mockReset();
     state.connection = {
       mode: "remote",
-      remoteUrl: "http://r:9119",
+      remoteUrl: `http://r:${++testPort}`,
       apiKey: "key",
       remoteAuthMode: "token",
     };
@@ -119,16 +122,18 @@ describe("remote gateway lifecycle", () => {
 
   // @lat: [[main-process#Main Process#Remote Gateway management#Lifecycle completion and overlap]]
   it("keeps Stop pending and rejects an overlapping Start until the command and gateway both stop", async () => {
+    let admitted = false;
     let commandDone = false;
     let stopped = false;
     request.mockImplementation(async (_conn, path: string) => {
       if (path.includes("/api/actions/"))
         return {
-          pid: 11,
-          running: !commandDone,
+          pid: admitted ? 11 : null,
+          running: admitted && !commandDone,
           exit_code: commandDone ? 0 : null,
         };
       if (path.includes("/api/status")) return { gateway_running: !stopped };
+      if (path.includes("/api/gateway/")) admitted = true;
       return immediateRoute(path);
     });
     const pending = remoteStopGateway("work");
@@ -199,8 +204,11 @@ describe("remote gateway lifecycle", () => {
   });
 
   it("reports an unconfirmed restart timeout without claiming the command was cancelled", async () => {
+    let gatewayPid = 21;
     request.mockImplementation(async (_conn, path: string) =>
-      immediateRoute(path),
+      path.includes("/api/status")
+        ? { gateway_running: true, gateway_pid: gatewayPid }
+        : immediateRoute(path),
     );
     const pending = remoteRestartGateway();
     await tick(240000);
@@ -208,6 +216,120 @@ describe("remote gateway lifecycle", () => {
       success: false,
       error: expect.stringContaining("server may still be processing"),
     });
+    expect(await remoteGatewayCommandPending()).toBe(true);
+    const postsBefore = request.mock.calls.filter(
+      (call) => call[2].method === "POST",
+    ).length;
+    expect((await remoteStartGateway("another-profile")).success).toBe(false);
+    expect(
+      request.mock.calls.filter((call) => call[2].method === "POST"),
+    ).toHaveLength(postsBefore);
+    gatewayPid = 22;
+    expect(await remoteGatewayCommandPending()).toBe(false);
+  });
+
+  // @lat: [[main-process#Main Process#Remote Gateway management#External action preflight]]
+  it("rejects server commands already running before submitting another mutation", async () => {
+    request.mockResolvedValue({ running: true, pid: 98, exit_code: null });
+    expect((await remoteStopGateway()).success).toBe(false);
+    expect(request.mock.calls.some((call) => call[2].method === "POST")).toBe(
+      false,
+    );
+    expect(await remoteGatewayCommandPending()).toBe(true);
+  });
+
+  it("serializes admission across profiles on the same dashboard", async () => {
+    let finishPreflight!: (value: unknown) => void;
+    const preflight = new Promise((resolve) => {
+      finishPreflight = resolve;
+    });
+    request
+      .mockReturnValueOnce(preflight)
+      .mockImplementation(async (_conn, path: string) => immediateRoute(path));
+    const pending = remoteStartGateway("work");
+    expect((await remoteStopGateway("other")).success).toBe(false);
+    finishPreflight({ running: false, pid: null, exit_code: null });
+    expect(await pending).toEqual({ success: true });
+    expect(
+      request.mock.calls.filter((call) => call[2].method === "POST"),
+    ).toHaveLength(1);
+  });
+
+  // @lat: [[main-process#Main Process#Remote Gateway management#Uncertain dispatch and explicit refusals]]
+  it.each([
+    new Error("connection reset after dispatch"),
+    { ok: true, name: "gateway-start" },
+  ])(
+    "retains an uncertain POST reservation without inferring another action PID: %j",
+    async (admission) => {
+      request.mockImplementation(async (_conn, path: string) => {
+        if (path.includes("/api/gateway/")) {
+          if (admission instanceof Error) throw admission;
+          return admission;
+        }
+        return immediateRoute(path);
+      });
+      expect((await remoteStartGateway()).success).toBe(false);
+      await expect(remoteGatewayCommandPending()).rejects.toThrow(
+        "accepted action PID is unknown",
+      );
+      expect((await remoteStopGateway("other")).success).toBe(false);
+      expect(
+        request.mock.calls.filter((call) => call[2].method === "POST"),
+      ).toHaveLength(1);
+    },
+  );
+
+  it("releases an explicit HTTP refusal without leaving a permanently uncertain reservation", async () => {
+    request.mockImplementation(async (_conn, path: string) => {
+      if (path.includes("/api/gateway/"))
+        throw Object.assign(new Error("served by multiplexer"), {
+          statusCode: 409,
+        });
+      return immediateRoute(path);
+    });
+    expect((await remoteStartGateway()).success).toBe(false);
+    expect(await remoteGatewayCommandPending()).toBe(false);
+  });
+
+  // @lat: [[main-process#Main Process#Remote Gateway management#Refresh preserves newer operations]]
+  it("does not let a delayed old-operation refresh erase a newer admitted operation", async () => {
+    let gatewayPid = 21;
+    let stopAdmitted = false;
+    let deferOldRead = false;
+    let resolveOldRead!: (value: unknown) => void;
+    const oldRead = new Promise((resolve) => {
+      resolveOldRead = resolve;
+    });
+    request.mockImplementation(async (_conn, path: string) => {
+      if (path.includes("/api/status"))
+        return { gateway_running: true, gateway_pid: gatewayPid };
+      if (path.includes("/api/gateway/stop")) {
+        stopAdmitted = true;
+        return { ok: true, pid: 12, name: "gateway-stop" };
+      }
+      if (path.includes("/api/actions/gateway-restart") && deferOldRead) {
+        deferOldRead = false;
+        return oldRead;
+      }
+      if (path.includes("/api/actions/gateway-stop") && stopAdmitted)
+        return { pid: 12, running: true, exit_code: null };
+      return immediateRoute(path);
+    });
+    const first = remoteRestartGateway();
+    await tick(240000);
+    expect((await first).success).toBe(false);
+    gatewayPid = 22;
+    deferOldRead = true;
+    const staleRefresh = remoteGatewayCommandPending();
+    const second = remoteStopGateway();
+    await tick(0);
+    expect(stopAdmitted).toBe(true);
+    resolveOldRead({ pid: 11, running: false, exit_code: 0 });
+    expect(await staleRefresh).toBe(true);
+    await tick(240000);
+    expect((await second).success).toBe(false);
+    expect(await remoteGatewayCommandPending()).toBe(true);
   });
 
   it.each([
@@ -259,6 +381,7 @@ describe("remote gateway lifecycle", () => {
     request.mockImplementation(async (_conn, path: string) =>
       path.includes("/api/gateway/") ? admission : immediateRoute(path),
     );
+    const originalUrl = state.connection.remoteUrl;
     const pending = remoteStartGateway("work");
     state.connection = {
       ...state.connection,
@@ -270,7 +393,7 @@ describe("remote gateway lifecycle", () => {
     expect(
       request.mock.calls.every(
         (call) =>
-          call[0].remoteUrl === "http://r:9119" &&
+          call[0].remoteUrl === originalUrl &&
           call[0].apiKey === "key" &&
           call[1].endsWith("?profile=work"),
       ),
@@ -312,7 +435,7 @@ describe("remote gateway lifecycle", () => {
       expect(
         fetchMock.mock.calls.every(
           (call) =>
-            call[0].startsWith("http://r:9119/api/") &&
+            call[0].startsWith(`${state.connection.remoteUrl}/api/`) &&
             call[0].endsWith("?profile=work"),
         ),
       ).toBe(true);

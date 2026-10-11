@@ -5,13 +5,31 @@ import { remoteDashboardRequestJson } from "./remote-api";
 type GatewayAction = "start" | "stop" | "restart";
 type GatewayActionResult = { success: boolean; error?: string };
 type GatewayStatus = { gateway_running: boolean; gateway_pid?: number | null };
-type ActionStatus = { pid: number; running: boolean; exit_code: number | null };
+type ActionStatus = {
+  pid: number | null;
+  running: boolean;
+  exit_code: number | null;
+};
 
 // Shutdown can drain active work for ~180 seconds. Timeout reports unconfirmed
 // completion; it does not cancel an accepted server command.
 const COMPLETION_TIMEOUT_MS = 240_000;
 const POLL_INTERVAL_MS = 1000;
 const pendingActions = new Set<string>();
+type PendingOperation = {
+  connection: ConnectionConfig;
+  profile?: string;
+  action: GatewayAction;
+  pid?: number;
+  before?: GatewayStatus;
+  observedStopped: boolean;
+};
+const unconfirmedOperations = new Map<string, PendingOperation>();
+class GatewayCommandFailedError extends Error {}
+
+function targetKey(connection: ConnectionConfig): string {
+  return normaliseRemoteUrl(connection.remoteUrl);
+}
 
 function profileQuery(path: string, profile?: string): string {
   return `${path}?profile=${encodeURIComponent(profile || "default")}`;
@@ -33,7 +51,10 @@ async function gatewayJson<T>(
     );
     const data = await response.json();
     if (!response.ok)
-      throw new Error(data.error || data.detail || `HTTP ${response.status}`);
+      throw Object.assign(
+        new Error(data.error || data.detail || `HTTP ${response.status}`),
+        { statusCode: response.status },
+      );
     return data as T;
   };
   if (connection.remoteAuthMode === "token" && !connection.apiKey?.trim()) {
@@ -85,85 +106,197 @@ export async function remoteGatewayStatus(profile?: string): Promise<boolean> {
   }
 }
 
+async function operationComplete(
+  operation: PendingOperation,
+  timeoutMs = 15_000,
+): Promise<boolean> {
+  const { connection, profile, action, pid, before } = operation;
+  if (pid === undefined)
+    throw new Error(
+      `Remote gateway ${action} admission could not be confirmed. Lifecycle controls remain blocked because the accepted action PID is unknown.`,
+    );
+  const command = await gatewayJson<ActionStatus>(
+    connection,
+    profileQuery(`/api/actions/gateway-${action}/status`, profile),
+    "GET",
+    timeoutMs,
+  );
+  if (command?.pid !== pid) {
+    throw new Error(
+      `Remote gateway ${action} action was replaced; completion cannot be confirmed.`,
+    );
+  }
+  if (
+    typeof command.running !== "boolean" ||
+    (!command.running && !Number.isInteger(command.exit_code))
+  ) {
+    throw new Error(
+      `Remote gateway ${action} did not return a completed action result.`,
+    );
+  }
+  if (!command.running && command.exit_code !== 0) {
+    throw new GatewayCommandFailedError(
+      `Remote gateway ${action} failed (exit ${command.exit_code}).`,
+    );
+  }
+  const status = await readGatewayStatus(connection, profile, timeoutMs);
+  if (!status.gateway_running) operation.observedStopped = true;
+  const expectedState =
+    action === "stop" ? !status.gateway_running : status.gateway_running;
+  const restarted =
+    action !== "restart" ||
+    operation.observedStopped ||
+    (typeof before?.gateway_pid === "number" &&
+      typeof status.gateway_pid === "number" &&
+      before.gateway_pid !== status.gateway_pid);
+  return !command.running && expectedState && restarted;
+}
+
+async function commandPending(
+  connection: ConnectionConfig,
+  profile?: string,
+): Promise<boolean> {
+  const key = targetKey(connection);
+  if (pendingActions.has(key)) return true;
+  const operation = unconfirmedOperations.get(key);
+  if (operation) {
+    try {
+      if (!(await operationComplete(operation))) return true;
+      if (unconfirmedOperations.get(key) === operation)
+        unconfirmedOperations.delete(key);
+    } catch (error) {
+      // Only a matching terminal failure proves the admitted command stopped.
+      // Timeout, auth failures or replaced records retain the operation lock.
+      if (!(error instanceof GatewayCommandFailedError)) throw error;
+      if (unconfirmedOperations.get(key) === operation)
+        unconfirmedOperations.delete(key);
+    }
+  }
+  if (pendingActions.has(key) || unconfirmedOperations.has(key)) return true;
+  // The server action registry is global by name. Conservatively block any
+  // in-flight gateway command, including commands submitted by other clients.
+  for (const action of ["start", "stop", "restart"] as const) {
+    const status = await gatewayJson<ActionStatus>(
+      connection,
+      profileQuery(`/api/actions/gateway-${action}/status`, profile),
+    );
+    if (serverCommandPending(status)) return true;
+  }
+  return pendingActions.has(key) || unconfirmedOperations.has(key);
+}
+
+function serverCommandPending(status: ActionStatus): boolean {
+  if (typeof status?.running !== "boolean")
+    throw new Error("Remote gateway action status did not include running.");
+  if (status.running) return true;
+  if (status.pid === null && status.exit_code === null) return false;
+  if (
+    typeof status.pid !== "number" ||
+    !Number.isInteger(status.pid) ||
+    status.pid <= 0
+  )
+    throw new Error(
+      "Remote gateway action status did not include a valid PID.",
+    );
+  return !Number.isInteger(status.exit_code);
+}
+
+export async function remoteGatewayCommandPending(
+  profile?: string,
+): Promise<boolean> {
+  return commandPending({ ...getConnectionConfig() }, profile);
+}
+
 // @lat: [[main-process#Main Process#Remote Gateway management]]
 async function spawnGatewayAction(
   action: GatewayAction,
   profile?: string,
-): Promise<{ success: boolean; error?: string }> {
+): Promise<GatewayActionResult> {
   const connection = { ...getConnectionConfig() };
-  const key = `${normaliseRemoteUrl(connection.remoteUrl)}\n${profile || "default"}`;
-  if (pendingActions.has(key)) {
+  const key = targetKey(connection);
+  if (pendingActions.has(key))
     return {
       success: false,
       error: "A gateway command is already pending for this remote profile.",
     };
-  }
+  // Reserve before the asynchronous preflight so concurrent desktop requests
+  // cannot both pass it and submit overlapping commands.
   pendingActions.add(key);
   try {
-    const before =
-      action === "restart"
-        ? await readGatewayStatus(connection, profile)
-        : undefined;
+    const operation = unconfirmedOperations.get(key);
+    if (operation) {
+      if (!(await operationComplete(operation)))
+        throw new Error(
+          "A gateway command is still awaiting completion for this remote profile.",
+        );
+      unconfirmedOperations.delete(key);
+    }
+    for (const actionName of ["start", "stop", "restart"] as const) {
+      const status = await gatewayJson<ActionStatus>(
+        connection,
+        profileQuery(`/api/actions/gateway-${actionName}/status`, profile),
+      );
+      if (serverCommandPending(status))
+        throw new Error(
+          "A server gateway command is already pending. Refresh status after it completes.",
+        );
+    }
+    const before = await readGatewayStatus(connection, profile);
     const name = `gateway-${action}`;
-    const result = await gatewayJson<{
-      ok?: boolean;
-      pid?: number;
-      name?: string;
-    }>(connection, profileQuery(`/api/gateway/${action}`, profile), "POST");
+    const accepted: PendingOperation = {
+      connection,
+      profile,
+      action,
+      before,
+      observedStopped: before.gateway_running === false,
+    };
+    // Dispatch can succeed on the server even when its HTTP response is lost.
+    // Reserve uncertainty before POST; missing admission PID cannot release it.
+    unconfirmedOperations.set(key, accepted);
+    let result: { ok?: boolean; pid?: number; name?: string };
+    try {
+      result = await gatewayJson<{
+        ok?: boolean;
+        pid?: number;
+        name?: string;
+      }>(connection, profileQuery(`/api/gateway/${action}`, profile), "POST");
+    } catch (error) {
+      const statusCode =
+        typeof error === "object" && error !== null && "statusCode" in error
+          ? error.statusCode
+          : undefined;
+      // Structured refusals prove no command was admitted. Network/5xx/HTML
+      // failures remain uncertain and must retain the reservation.
+      if (
+        typeof statusCode === "number" &&
+        [400, 401, 403, 404, 405, 409, 422, 429].includes(statusCode)
+      ) {
+        if (unconfirmedOperations.get(key) === accepted)
+          unconfirmedOperations.delete(key);
+      }
+      throw error;
+    }
     if (
-      !result?.ok ||
+      result?.ok !== true ||
       result.name !== name ||
       !Number.isInteger(result.pid) ||
       (result.pid ?? 0) <= 0
-    ) {
+    )
       throw new Error(
         `Remote gateway ${action} did not return a trackable action.`,
       );
-    }
+    accepted.pid = result.pid;
     const deadline = Date.now() + COMPLETION_TIMEOUT_MS;
-    let observedStopped = before?.gateway_running === false;
     while (Date.now() < deadline) {
-      const timeoutMs = Math.min(15_000, deadline - Date.now());
-      const command = await gatewayJson<ActionStatus>(
-        connection,
-        profileQuery(`/api/actions/${name}/status`, profile),
-        "GET",
-        timeoutMs,
-      );
-      if (command?.pid !== result.pid) {
-        throw new Error(
-          `Remote gateway ${action} action was replaced; completion cannot be confirmed.`,
-        );
-      }
       if (
-        typeof command.running !== "boolean" ||
-        (!command.running && !Number.isInteger(command.exit_code))
+        await operationComplete(
+          accepted,
+          Math.min(15_000, deadline - Date.now()),
+        )
       ) {
-        throw new Error(
-          `Remote gateway ${action} did not return a completed action result.`,
-        );
-      }
-      if (!command.running && command.exit_code !== 0) {
-        throw new Error(
-          `Remote gateway ${action} failed (exit ${command.exit_code}).`,
-        );
-      }
-      const status = await readGatewayStatus(
-        connection,
-        profile,
-        Math.max(1, Math.min(15_000, deadline - Date.now())),
-      );
-      if (!status.gateway_running) observedStopped = true;
-      const expectedState =
-        action === "stop" ? !status.gateway_running : status.gateway_running;
-      const restarted =
-        action !== "restart" ||
-        observedStopped ||
-        (typeof before?.gateway_pid === "number" &&
-          typeof status.gateway_pid === "number" &&
-          before.gateway_pid !== status.gateway_pid);
-      if (!command.running && expectedState && restarted)
+        unconfirmedOperations.delete(key);
         return { success: true };
+      }
       await new Promise((resolve) =>
         setTimeout(
           resolve,
@@ -172,9 +305,11 @@ async function spawnGatewayAction(
       );
     }
     throw new Error(
-      `Remote gateway ${action} completion could not be confirmed. The server may still be processing the command.`,
+      `Remote gateway ${action} completion could not be confirmed. The server may still be processing the command. Refresh status to check completion.`,
     );
   } catch (err) {
+    if (err instanceof GatewayCommandFailedError)
+      unconfirmedOperations.delete(key);
     return {
       success: false,
       error: err instanceof Error ? err.message : String(err),

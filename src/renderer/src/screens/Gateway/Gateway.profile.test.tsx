@@ -20,6 +20,7 @@ function installApi(overrides: Record<string, unknown> = {}): void {
       getEnv: vi.fn().mockResolvedValue({}),
       getApiServerKeyStatus: vi.fn().mockResolvedValue({ hasKey: true }),
       gatewayStatus: vi.fn().mockResolvedValue(true),
+      gatewayCommandPending: vi.fn().mockResolvedValue(false),
       getPlatformEnabled: vi.fn().mockResolvedValue({}),
       restartGateway: vi.fn().mockResolvedValue(true),
       startGateway: vi
@@ -160,6 +161,40 @@ describe("Gateway screen with a selected profile / failing platform list", () =>
     expect(window.hermesAPI.gatewayStatus).toHaveBeenCalledTimes(callsBefore);
     unmount();
     expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  // @lat: [[main-process#Main Process#Remote Gateway management#Unconfirmed commands remain blocked]]
+  it("keeps lifecycle controls blocked after an unconfirmed timeout until a refresh confirms completion", async () => {
+    let pending = false;
+    installApi({
+      gatewayCommandPending: vi.fn().mockImplementation(async () => pending),
+      stopGateway: vi.fn().mockImplementation(async () => {
+        pending = true;
+        throw new Error(
+          "Completion unconfirmed; server may still be processing",
+        );
+      }),
+    });
+    render(<Gateway profile="work" remoteMode />);
+    await settle();
+    fireEvent.click(screen.getByText("common.stop"));
+    await settle();
+    expect(
+      (screen.getByText("common.stop").closest("button") as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(
+      screen.getByText(
+        "Completion unconfirmed; server may still be processing",
+      ),
+    ).toBeTruthy();
+    pending = false;
+    fireEvent.click(screen.getByText("gateway.refresh"));
+    await settle();
+    expect(
+      (screen.getByText("common.stop").closest("button") as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
   });
 
   // @lat: [[main-process#Main Process#Remote Gateway management#Pending actions after teardown]]

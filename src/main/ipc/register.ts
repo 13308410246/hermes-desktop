@@ -260,6 +260,7 @@ import {
 import {
   remoteGatewayStatus,
   remoteRestartGateway,
+  remoteGatewayCommandPending,
   remoteStartGateway,
   remoteStopGateway,
 } from "../remote-gateway";
@@ -2099,6 +2100,14 @@ export function registerIpcHandlers(context: IpcContext): void {
   );
 
   // Gateway
+  ipcMain.handle(
+    "gateway-command-pending",
+    async (_event, profile?: string) => {
+      return getConnectionConfig().mode === "remote"
+        ? remoteGatewayCommandPending(profile)
+        : false;
+    },
+  );
   ipcMain.handle("start-gateway", async (_event, profile?: string) => {
     const conn = getConnectionConfig();
     if (conn.mode === "ssh" && conn.ssh) {

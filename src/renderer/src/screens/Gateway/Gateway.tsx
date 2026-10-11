@@ -37,6 +37,7 @@ function GatewayContent({
   const { t } = useI18n();
   const [gatewayRunning, setGatewayRunning] = useState(false);
   const [gatewayBusy, setGatewayBusy] = useState(false);
+  const [remoteCommandPending, setRemoteCommandPending] = useState(remoteMode);
   const [gatewayError, setGatewayError] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<MessagingPlatformsResponse | null>(
     null,
@@ -78,11 +79,18 @@ function GatewayContent({
     try {
       // Independent requests: a failing platform list must not discard a
       // successful status (the page would stay "stopped" with no controls).
-      const [statusResult, platformsResult] = await Promise.allSettled([
-        window.hermesAPI.gatewayStatus(profile),
-        window.hermesAPI.getMessagingPlatforms(profile),
-      ]);
+      const [statusResult, platformsResult, pendingResult] =
+        await Promise.allSettled([
+          window.hermesAPI.gatewayStatus(profile),
+          window.hermesAPI.getMessagingPlatforms(profile),
+          remoteMode
+            ? window.hermesAPI.gatewayCommandPending(profile)
+            : Promise.resolve(false),
+        ]);
       if (!mountedRef.current) return;
+      setRemoteCommandPending(
+        pendingResult.status === "fulfilled" ? pendingResult.value : remoteMode,
+      );
       if (statusResult.status === "fulfilled") {
         const gwStatus = statusResult.value;
         setGatewayRunning(gwStatus);
@@ -103,7 +111,9 @@ function GatewayContent({
           ? platformsResult.reason
           : statusResult.status === "rejected"
             ? statusResult.reason
-            : null;
+            : pendingResult.status === "rejected"
+              ? pendingResult.reason
+              : null;
       if (failure) {
         setLoadError(
           failure instanceof Error ? failure.message : String(failure),
@@ -112,7 +122,7 @@ function GatewayContent({
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : String(err));
     }
-  }, [profile, t]);
+  }, [profile, remoteMode, t]);
 
   useEffect(() => {
     void loadConfig();
@@ -185,6 +195,7 @@ function GatewayContent({
           err instanceof Error ? err.message : t("gateway.stopFailed"),
         );
       } finally {
+        await refreshPendingCommand();
         if (mountedRef.current) setGatewayBusy(false);
       }
     } else {
@@ -225,6 +236,7 @@ function GatewayContent({
           err instanceof Error ? err.message : t("gateway.startFailed"),
         );
       } finally {
+        await refreshPendingCommand();
         if (mountedRef.current) setGatewayBusy(false);
       }
     }
@@ -262,7 +274,18 @@ function GatewayContent({
       if (!mountedRef.current) return;
       setGatewayError(t("gateway.restartFailed"));
     } finally {
+      await refreshPendingCommand();
       if (mountedRef.current) setGatewayBusy(false);
+    }
+  }
+
+  async function refreshPendingCommand(): Promise<void> {
+    if (!remoteMode || !mountedRef.current) return;
+    try {
+      const pending = await window.hermesAPI.gatewayCommandPending(profile);
+      if (mountedRef.current) setRemoteCommandPending(pending);
+    } catch {
+      if (mountedRef.current) setRemoteCommandPending(true);
     }
   }
 
@@ -429,7 +452,7 @@ function GatewayContent({
             <button
               className="btn btn-secondary btn-sm"
               onClick={() => void toggleGateway()}
-              disabled={gatewayBusy}
+              disabled={gatewayBusy || remoteCommandPending}
             >
               {gatewayBusy
                 ? t("gateway.working")
@@ -441,7 +464,7 @@ function GatewayContent({
               <button
                 className="btn btn-secondary btn-sm"
                 onClick={() => void restartGateway()}
-                disabled={gatewayBusy}
+                disabled={gatewayBusy || remoteCommandPending}
               >
                 {t("gateway.restart")}
               </button>

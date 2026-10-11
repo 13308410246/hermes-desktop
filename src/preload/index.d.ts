@@ -586,6 +586,7 @@ interface HermesAPI {
   stopGateway: (profile?: string) => Promise<boolean>;
   restartGateway: (profile?: string) => Promise<boolean>;
   gatewayStatus: (profile?: string) => Promise<boolean>;
+  gatewayCommandPending: (profile?: string) => Promise<boolean>;
   setNativeAppearance: (source: "dark" | "light" | "system") => Promise<void>;
   getSpellCheckerInfo: () => Promise<{
     available: string[];

@@ -74,7 +74,7 @@ The Remote Gateway screen controls the server's gateway and messaging platforms 
 
 [[src/main/remote-gateway.ts#remoteGatewayStatus]] reads liveness from `/api/status`. Lifecycle commands capture a connection and explicit default or named profile, then await their matching action PID's successful exit and the requested gateway state. Restart also requires a changed live gateway PID or an observed stopped-to-running transition, because command exit can precede the restart handoff.
 
-Commands for one remote URL and profile cannot overlap while completion is pending. The four-minute confirmation budget allows server-side draining; timeout reports unconfirmed completion without cancelling the server command. Status authentication errors, invalid JSON and replaced action records cannot prove completion.
+Commands for one remote URL cannot overlap, including different profiles because the action registry is server-wide. The four-minute budget allows server-side draining; timeout retains an unconfirmed operation lock without cancelling the command. Read-only refresh confirms completion before releasing controls. Status errors, invalid JSON and replaced action records retain uncertainty.
 
 [[src/renderer/src/screens/Gateway/Gateway.tsx#Gateway]] keeps successful status when platform settings fail, hides local API key controls in Remote mode, and cancels pending status timers on unmount. Connection, profile, mode and configuration revisions reset its state; commands stay disabled until IPC confirms completion.
 
@@ -102,7 +102,23 @@ Explicit and resolved auto keyless token dashboards retain scoped JSON status, S
 
 ### Lifecycle completion and overlap
 
-Stop remains pending until its matching command exits successfully and the gateway is stopped. A concurrent command for that remote profile is rejected before another mutation is submitted.
+Stop remains pending until its matching command exits successfully and the gateway is stopped. A concurrent command for that remote server, including another profile, is rejected before another mutation is submitted.
+
+### External action preflight
+
+Before submitting a lifecycle mutation, desktop checks the server's global Start, Stop and Restart action records. Existing running commands block new mutations; idle records may legitimately have no PID or exit code.
+
+### Unconfirmed commands remain blocked
+
+An unconfirmed timeout keeps the accepted operation and Gateway controls blocked. Periodic or manual read-only refresh releases them only after matching completion evidence or a known terminal command failure.
+
+### Uncertain dispatch and explicit refusals
+
+A reservation exists before dispatch because an HTTP failure can hide an accepted command. Missing admission PID remains uncertain; explicit HTTP refusals release the reservation because the server rejected the mutation.
+
+### Refresh preserves newer operations
+
+A delayed refresh can clear only the operation it inspected. It cannot remove a newer command's retained record or report idle while another admission is in progress.
 
 ### Restart handoff evidence
 

@@ -857,6 +857,8 @@ const hermesAPI = {
     ipcRenderer.invoke("restart-gateway", profile),
   gatewayStatus: (profile?: string): Promise<boolean> =>
     ipcRenderer.invoke("gateway-status", profile),
+  gatewayCommandPending: (profile?: string): Promise<boolean> =>
+    ipcRenderer.invoke("gateway-command-pending", profile),
   setNativeAppearance: (source: "dark" | "light" | "system"): Promise<void> =>
     ipcRenderer.invoke("set-native-appearance", source),
 
