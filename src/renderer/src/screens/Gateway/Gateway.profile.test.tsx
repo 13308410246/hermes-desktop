@@ -14,6 +14,9 @@ vi.mock("../../components/common/BrandLogo", () => ({
 import Gateway from "./Gateway";
 
 function installApi(overrides: Record<string, unknown> = {}): void {
+  const pending = overrides.gatewayCommandPending as
+    | ((profile?: string) => Promise<boolean>)
+    | undefined;
   Object.defineProperty(window, "hermesAPI", {
     configurable: true,
     value: {
@@ -21,6 +24,11 @@ function installApi(overrides: Record<string, unknown> = {}): void {
       getApiServerKeyStatus: vi.fn().mockResolvedValue({ hasKey: true }),
       gatewayStatus: vi.fn().mockResolvedValue(true),
       gatewayCommandPending: vi.fn().mockResolvedValue(false),
+      gatewayCommandStatus: vi
+        .fn()
+        .mockImplementation(async (profile?: string) => ({
+          pending: pending ? await pending(profile) : false,
+        })),
       remoteGatewayAction: vi.fn().mockResolvedValue({ success: true }),
       getPlatformEnabled: vi.fn().mockResolvedValue({}),
       restartGateway: vi.fn().mockResolvedValue(true),
@@ -371,6 +379,88 @@ describe("Gateway screen with a selected profile / failing platform list", () =>
           .closest("button") as HTMLButtonElement
       ).disabled,
     ).toBe(false);
+  });
+
+  // @lat: [[main-process#Main Process#Remote Gateway management#Gateway renders late command failure]]
+  it.each(["stop", "restart"])(
+    "replaces %s uncertainty with a matching late failure while releasing controls",
+    async (action) => {
+      let phase: "idle" | "uncertain" | "failed" | "reported" = "idle";
+      const error = `Remote gateway ${action} failed (exit 1).`;
+      installApi({
+        remoteGatewayAction: vi.fn().mockImplementation(async () => {
+          phase = "uncertain";
+          return {
+            success: false,
+            failureKind: "unconfirmed",
+            error: "fetch failed",
+          };
+        }),
+        gatewayCommandStatus: vi.fn().mockImplementation(async () => {
+          if (phase === "failed") {
+            phase = "reported";
+            return { pending: false, failure: { error } };
+          }
+          return { pending: phase === "uncertain" };
+        }),
+      });
+      render(<Gateway profile="work" remoteMode />);
+      await settle();
+      fireEvent.click(
+        screen.getByText(action === "stop" ? "common.stop" : "gateway.restart"),
+      );
+      await settle();
+      expect(screen.getByText("fetch failed")).toBeTruthy();
+      phase = "failed";
+      fireEvent.click(screen.getByText("gateway.refresh"));
+      await settle();
+      expect(screen.queryByText("fetch failed")).toBeNull();
+      expect(screen.getByText(error)).toBeTruthy();
+      expect(
+        (screen.getByText("common.stop").closest("button") as HTMLButtonElement)
+          .disabled,
+      ).toBe(false);
+      fireEvent.click(screen.getByText("gateway.refresh"));
+      await settle();
+      expect(screen.getByText(error)).toBeTruthy();
+    },
+  );
+
+  // @lat: [[main-process#Main Process#Remote Gateway management#Refresh replies cannot undo a newer action]]
+  it("ignores old idle or failure refresh replies after a newer action becomes uncertain", async () => {
+    let resolveOld!: (value: unknown) => void;
+    const oldStatus = new Promise((resolve) => {
+      resolveOld = resolve;
+    });
+    const status = vi.fn().mockResolvedValue({ pending: false });
+    installApi({
+      gatewayCommandStatus: status,
+      remoteGatewayAction: vi.fn().mockImplementation(async () => {
+        status.mockResolvedValue({ pending: true });
+        return {
+          success: false,
+          failureKind: "unconfirmed",
+          error: "new action completion unknown",
+        };
+      }),
+    });
+    render(<Gateway profile="work" remoteMode />);
+    await settle();
+    status.mockReturnValueOnce(oldStatus);
+    fireEvent.click(screen.getByText("gateway.refresh"));
+    await settle();
+    fireEvent.click(screen.getByText("common.stop"));
+    await settle();
+    await act(async () => {
+      resolveOld({ pending: false, failure: { error: "old action failed" } });
+      await oldStatus;
+    });
+    expect(screen.getByText("new action completion unknown")).toBeTruthy();
+    expect(screen.queryByText("old action failed")).toBeNull();
+    expect(
+      (screen.getByText("common.stop").closest("button") as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
   });
 
   // @lat: [[main-process#Main Process#Remote Gateway management#Pending reads preserve command meaning]]

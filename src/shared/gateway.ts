@@ -7,3 +7,8 @@ export type RemoteGatewayActionResult =
       error: string;
       failureKind: "failed" | "unconfirmed";
     };
+
+export type RemoteGatewayCommandStatus = {
+  pending: boolean;
+  failure?: { error: string };
+};

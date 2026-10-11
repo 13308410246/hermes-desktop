@@ -17,7 +17,10 @@ import {
 import { useI18n } from "../../components/useI18n";
 import BrandLogo from "../../components/common/BrandLogo";
 import { useConnectionTargetRevision } from "../../hooks/useConnectionTargetRevision";
-import type { RemoteGatewayAction } from "../../../../shared/gateway";
+import type {
+  RemoteGatewayAction,
+  RemoteGatewayCommandStatus,
+} from "../../../../shared/gateway";
 import type {
   MessagingEnvVarInfo,
   MessagingPlatformInfo,
@@ -61,6 +64,7 @@ function GatewayContent({
   const mountedRef = useRef(false);
   const gatewayErrorUnconfirmedRef = useRef(false);
   const gatewayErrorTerminalRef = useRef(false);
+  const commandRevisionRef = useRef(0);
 
   // A pending "check again in 5 s" must not outlive the screen (or the profile
   // it was started for): it would write that profile's status into a page that
@@ -78,6 +82,7 @@ function GatewayContent({
 
   const loadConfig = useCallback(async (): Promise<void> => {
     if (!mountedRef.current) return;
+    const commandRevision = commandRevisionRef.current;
     setLoadError(null);
     try {
       // Independent requests: a failing platform list must not discard a
@@ -87,13 +92,22 @@ function GatewayContent({
           window.hermesAPI.gatewayStatus(profile),
           window.hermesAPI.getMessagingPlatforms(profile),
           remoteMode
-            ? window.hermesAPI.gatewayCommandPending(profile)
-            : Promise.resolve(false),
+            ? window.hermesAPI.gatewayCommandStatus(profile)
+            : Promise.resolve({ pending: false }),
         ]);
-      if (!mountedRef.current) return;
-      const commandPending =
-        pendingResult.status === "fulfilled" ? pendingResult.value : remoteMode;
+      if (!mountedRef.current || commandRevisionRef.current !== commandRevision)
+        return;
+      const commandStatus: RemoteGatewayCommandStatus =
+        pendingResult.status === "fulfilled"
+          ? pendingResult.value
+          : { pending: remoteMode };
+      const commandPending = commandStatus.pending;
       setRemoteCommandPending(commandPending);
+      if (commandStatus.failure) {
+        gatewayErrorUnconfirmedRef.current = false;
+        gatewayErrorTerminalRef.current = true;
+        setGatewayError(commandStatus.failure.error);
+      }
       if (statusResult.status === "fulfilled") {
         const gwStatus = statusResult.value;
         setGatewayRunning(gwStatus);
@@ -186,6 +200,7 @@ function GatewayContent({
   }, [platforms, query]);
 
   async function toggleGateway(): Promise<void> {
+    commandRevisionRef.current += 1;
     if (gatewayStatusTimeoutRef.current) {
       clearTimeout(gatewayStatusTimeoutRef.current);
       gatewayStatusTimeoutRef.current = null;
@@ -257,6 +272,7 @@ function GatewayContent({
   }
 
   async function restartGateway(): Promise<void> {
+    commandRevisionRef.current += 1;
     if (gatewayStatusTimeoutRef.current) {
       clearTimeout(gatewayStatusTimeoutRef.current);
       gatewayStatusTimeoutRef.current = null;
@@ -302,12 +318,14 @@ function GatewayContent({
   async function runRemoteGatewayAction(
     action: RemoteGatewayAction,
   ): Promise<void> {
+    const commandRevision = commandRevisionRef.current;
     try {
       const result = await window.hermesAPI.remoteGatewayAction(
         action,
         profile,
       );
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || commandRevisionRef.current !== commandRevision)
+        return;
       if (!result.success) {
         reportGatewayActionError(result.error, result.failureKind);
         return;
@@ -316,7 +334,11 @@ function GatewayContent({
       if (action !== "stop") {
         gatewayStatusTimeoutRef.current = setTimeout(async () => {
           const status = await window.hermesAPI.gatewayStatus(profile);
-          if (!mountedRef.current) return;
+          if (
+            !mountedRef.current ||
+            commandRevisionRef.current !== commandRevision
+          )
+            return;
           setGatewayRunning(status);
           if (status) {
             void loadConfig();
@@ -327,15 +349,25 @@ function GatewayContent({
         }, 5000);
       }
     } catch (error) {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || commandRevisionRef.current !== commandRevision)
+        return;
       // An IPC transport failure cannot prove whether main admitted the action.
       reportGatewayActionError(
         error instanceof Error ? error.message : String(error),
         "unconfirmed",
       );
     } finally {
-      await refreshPendingCommand();
-      if (mountedRef.current) setGatewayBusy(false);
+      if (
+        mountedRef.current &&
+        commandRevisionRef.current === commandRevision
+      ) {
+        await refreshPendingCommand();
+        if (
+          mountedRef.current &&
+          commandRevisionRef.current === commandRevision
+        )
+          setGatewayBusy(false);
+      }
     }
   }
 
@@ -351,13 +383,22 @@ function GatewayContent({
 
   async function refreshPendingCommand(): Promise<void> {
     if (!remoteMode || !mountedRef.current) return;
+    const commandRevision = commandRevisionRef.current;
     try {
-      const pending = await window.hermesAPI.gatewayCommandPending(profile);
-      if (mountedRef.current) {
-        setRemoteCommandPending(pending);
+      const status = await window.hermesAPI.gatewayCommandStatus(profile);
+      if (
+        mountedRef.current &&
+        commandRevisionRef.current === commandRevision
+      ) {
+        setRemoteCommandPending(status.pending);
+        if (status.failure)
+          reportGatewayActionError(status.failure.error, "failed");
       }
     } catch {
-      if (mountedRef.current) {
+      if (
+        mountedRef.current &&
+        commandRevisionRef.current === commandRevision
+      ) {
         setRemoteCommandPending(true);
       }
     }

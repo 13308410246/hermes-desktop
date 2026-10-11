@@ -78,6 +78,8 @@ Commands for one remote URL cannot overlap, including different profiles because
 
 [[src/main/remote-gateway.ts#remoteGatewayAction]] returns a typed Remote action outcome through `remote-gateway-action` IPC and preload. Retained admission means `unconfirmed`; known refusal or matching failed exit means `failed`. The screen uses this kind rather than message text. Legacy Local and SSH lifecycle handlers retain their existing contracts.
 
+[[src/main/remote-gateway.ts#remoteGatewayCommandStatus]] returns read-only pending state and a matching late failure through IPC. The active view receives that terminal result once, releases controls and preserves its error. No command history is stored. Admission revisions and renderer action revisions discard refresh evidence superseded by a newer command.
+
 [[src/renderer/src/screens/Gateway/Gateway.tsx#Gateway]] keeps successful status when platform settings fail, hides local API key controls in Remote mode, and cancels pending status timers on unmount. Connection, profile, mode and configuration revisions reset its state; commands stay disabled until IPC confirms completion.
 
 [[src/renderer/src/screens/Layout/useRemoteOnlyMode.ts#useRemoteOnlyMode]] refreshes mode after connection or configuration changes, rejects late answers from earlier targets, and hides local mutation controls while the new target is unresolved.
@@ -134,7 +136,7 @@ A genuine terminal Remote Stop or Restart failure remains visible when refresh r
 
 ### Pending reads preserve command meaning
 
-A command's typed outcome determines failure versus completion uncertainty. Pending-status reads affect controls only; failed or true reads cannot convert a known command failure into an explanation that later reconciliation clears.
+A typed command outcome determines failure versus uncertainty. Read errors or pending flags affect controls only; a matching terminal result carries failure meaning and cannot be overwritten by a later idle refresh.
 
 ### Remote-only action transport
 
@@ -179,6 +181,22 @@ In-place connection edits reset Gateway state and discard a prior target's late 
 ### Remote Start post-completion liveness
 
 A completed Remote Start retains the five-second liveness check and reports if the gateway exits immediately afterward. The check is cancelled or ignored when its target screen unmounts.
+
+### Late command outcomes reach the view
+
+A matching late successful exit clears uncertainty; a matching failed exit returns its terminal error with pending false. The failure is delivered to the active refresh without retaining command history.
+
+### Stale refresh cannot report old failure
+
+A delayed old-operation refresh cannot erase a newer retained record or publish its old failure after a newer admission. Admission revisions invalidate old idle evidence even if the newer command has already finished.
+
+### Gateway renders late command failure
+
+When an uncertain Stop or Restart later exits unsuccessfully, Gateway replaces the uncertainty explanation with the matching failure and releases controls. Later idle refreshes preserve that terminal failure.
+
+### Refresh replies cannot undo a newer action
+
+Beginning a new action invalidates earlier renderer refreshes. Delayed idle or failure replies cannot release its pending controls, clear its uncertainty explanation or overwrite it with an older command's error.
 
 ## Voice transcription IPC
 

@@ -25,6 +25,7 @@ import {
   remoteGatewayStatus,
   remoteGatewayAction,
   remoteGatewayCommandPending,
+  remoteGatewayCommandStatus,
   remoteRestartGateway,
   remoteStartGateway,
   remoteStopGateway,
@@ -248,6 +249,103 @@ describe("remote gateway lifecycle", () => {
       expect(await remoteGatewayCommandPending("work")).toBe(false);
     },
   );
+
+  // @lat: [[main-process#Main Process#Remote Gateway management#Late command outcomes reach the view]]
+  it.each([
+    ["stop", 0],
+    ["stop", 1],
+    ["restart", 0],
+    ["restart", 1],
+  ] as const)(
+    "returns the matching late %s exit%s result once without keeping failure history",
+    async (action, exitCode) => {
+      let admitted = false;
+      let recovered = false;
+      let reads = 0;
+      request.mockImplementation(
+        async (_conn, path: string, options: { method: string }) => {
+          if (options.method === "POST") admitted = true;
+          if (admitted && path.includes("/api/actions/")) {
+            if (!recovered) throw new TypeError("fetch failed");
+            return { pid: 11, running: false, exit_code: exitCode };
+          }
+          if (path.includes("/api/status"))
+            return {
+              gateway_running: !admitted || action !== "stop" || exitCode !== 0,
+              gateway_pid: ++reads === 1 ? 21 : 22,
+            };
+          return immediateRoute(path);
+        },
+      );
+      expect(await remoteGatewayAction(action, "work")).toMatchObject({
+        success: false,
+        failureKind: "unconfirmed",
+      });
+      recovered = true;
+      expect(await remoteGatewayCommandStatus("work")).toEqual(
+        exitCode === 0
+          ? { pending: false }
+          : {
+              pending: false,
+              failure: { error: `Remote gateway ${action} failed (exit 1).` },
+            },
+      );
+      expect(await remoteGatewayCommandStatus("work")).toEqual({
+        pending: false,
+      });
+      expect(
+        request.mock.calls.filter((call) => call[2].method === "POST"),
+      ).toHaveLength(1);
+      expect(
+        request.mock.calls.every((call) => call[1].endsWith("?profile=work")),
+      ).toBe(true);
+    },
+  );
+
+  // @lat: [[main-process#Main Process#Remote Gateway management#Stale refresh cannot report old failure]]
+  it("does not report an old failure or delete the newer command after a delayed status read", async () => {
+    let phase: "initial" | "recovered" | "new" = "initial";
+    let deferOld = false;
+    let resolveOld!: (value: unknown) => void;
+    const oldRead = new Promise((resolve) => {
+      resolveOld = resolve;
+    });
+    request.mockImplementation(
+      async (_conn, path: string, options: { method: string }) => {
+        if (path.includes("/api/status"))
+          return {
+            gateway_running: true,
+            gateway_pid: phase === "initial" ? 21 : 22,
+          };
+        if (path.includes("/api/gateway/stop") && options.method === "POST") {
+          phase = "new";
+          return { ok: true, pid: 12, name: "gateway-stop" };
+        }
+        if (path.includes("/api/actions/gateway-restart") && deferOld) {
+          deferOld = false;
+          return oldRead;
+        }
+        if (phase === "new" && path.includes("/api/actions/gateway-stop"))
+          throw new TypeError("new operation read failed");
+        return immediateRoute(path);
+      },
+    );
+    const first = remoteRestartGateway("work");
+    await tick(240000);
+    expect((await first).success).toBe(false);
+    phase = "recovered";
+    deferOld = true;
+    const oldStatus = remoteGatewayCommandStatus("work");
+    expect(await remoteStopGateway("work")).toMatchObject({
+      success: false,
+      failureKind: "unconfirmed",
+    });
+    resolveOld({ pid: 11, running: false, exit_code: 1 });
+    expect(await oldStatus).toEqual({ pending: true });
+    await expect(remoteGatewayCommandStatus("work")).rejects.toThrow(
+      "new operation read failed",
+    );
+  });
 
   it.each(["start", "stop", "restart"] as const)(
     "confirms %s from the matching completed action and selected profile status",

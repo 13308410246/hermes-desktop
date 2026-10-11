@@ -4,6 +4,7 @@ import { remoteDashboardRequestJson } from "./remote-api";
 import type {
   RemoteGatewayAction,
   RemoteGatewayActionResult,
+  RemoteGatewayCommandStatus,
 } from "../shared/gateway";
 
 type GatewayAction = RemoteGatewayAction;
@@ -20,6 +21,7 @@ type ActionStatus = {
 const COMPLETION_TIMEOUT_MS = 240_000;
 const POLL_INTERVAL_MS = 1000;
 const pendingActions = new Set<string>();
+const admissionRevisions = new Map<string, number>();
 type PendingOperation = {
   connection: ConnectionConfig;
   profile?: string;
@@ -159,37 +161,61 @@ async function operationComplete(
   return !command.running && expectedState && restarted;
 }
 
-async function commandPending(
+async function commandStatus(
   connection: ConnectionConfig,
   profile?: string,
-): Promise<boolean> {
+): Promise<RemoteGatewayCommandStatus> {
   const key = targetKey(connection);
-  if (pendingActions.has(key)) return true;
+  const revision = admissionRevisions.get(key);
+  const result = (
+    pending: boolean,
+    failure?: { error: string },
+  ): RemoteGatewayCommandStatus => {
+    // A refresh begun before a newer admission cannot publish old failure or
+    // idle evidence, even if that newer command has already finished.
+    if (admissionRevisions.get(key) !== revision) return { pending: true };
+    return { pending, ...(failure ? { failure } : {}) };
+  };
+  if (pendingActions.has(key)) return result(true);
   const operation = unconfirmedOperations.get(key);
+  let failure: { error: string } | undefined;
   if (operation) {
     try {
-      if (!(await operationComplete(operation))) return true;
+      if (!(await operationComplete(operation))) return result(true);
       if (unconfirmedOperations.get(key) === operation)
         unconfirmedOperations.delete(key);
     } catch (error) {
       // Only a matching terminal failure proves the admitted command stopped.
       // Timeout, auth failures or replaced records retain the operation lock.
       if (!(error instanceof GatewayCommandFailedError)) throw error;
-      if (unconfirmedOperations.get(key) === operation)
+      if (unconfirmedOperations.get(key) === operation) {
         unconfirmedOperations.delete(key);
+        failure = { error: error.message };
+      }
     }
   }
-  if (pendingActions.has(key) || unconfirmedOperations.has(key)) return true;
+  if (pendingActions.has(key) || unconfirmedOperations.has(key))
+    return result(true, failure);
   // The server action registry is global by name. Conservatively block any
   // in-flight gateway command, including commands submitted by other clients.
-  for (const action of ["start", "stop", "restart"] as const) {
-    const status = await gatewayJson<ActionStatus>(
-      connection,
-      profileQuery(`/api/actions/gateway-${action}/status`, profile),
-    );
-    if (serverCommandPending(status)) return true;
+  try {
+    for (const action of ["start", "stop", "restart"] as const) {
+      const status = await gatewayJson<ActionStatus>(
+        connection,
+        profileQuery(`/api/actions/gateway-${action}/status`, profile),
+      );
+      if (serverCommandPending(status)) return result(true, failure);
+    }
+  } catch (error) {
+    // A failed global preflight keeps controls restricted, but must not erase
+    // the matching terminal result already observed for this view.
+    if (failure) return result(true, failure);
+    throw error;
   }
-  return pendingActions.has(key) || unconfirmedOperations.has(key);
+  return result(
+    pendingActions.has(key) || unconfirmedOperations.has(key),
+    failure,
+  );
 }
 
 function serverCommandPending(status: ActionStatus): boolean {
@@ -211,7 +237,13 @@ function serverCommandPending(status: ActionStatus): boolean {
 export async function remoteGatewayCommandPending(
   profile?: string,
 ): Promise<boolean> {
-  return commandPending({ ...getConnectionConfig() }, profile);
+  return (await remoteGatewayCommandStatus(profile)).pending;
+}
+
+export async function remoteGatewayCommandStatus(
+  profile?: string,
+): Promise<RemoteGatewayCommandStatus> {
+  return commandStatus({ ...getConnectionConfig() }, profile);
 }
 
 // @lat: [[main-process#Main Process#Remote Gateway management]]
@@ -230,6 +262,7 @@ async function spawnGatewayAction(
   // Reserve before the asynchronous preflight so concurrent desktop requests
   // cannot both pass it and submit overlapping commands.
   pendingActions.add(key);
+  admissionRevisions.set(key, (admissionRevisions.get(key) ?? 0) + 1);
   try {
     const operation = unconfirmedOperations.get(key);
     if (operation) {

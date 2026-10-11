@@ -4,6 +4,7 @@ import type { Attachment } from "../shared/attachments";
 import type {
   RemoteGatewayAction,
   RemoteGatewayActionResult,
+  RemoteGatewayCommandStatus,
 } from "../shared/gateway";
 import type { SessionModelOverride } from "../shared/model-override";
 import type { DesktopSessionContinuationItem } from "../shared/session-continuation";
@@ -868,6 +869,10 @@ const hermesAPI = {
     ipcRenderer.invoke("gateway-status", profile),
   gatewayCommandPending: (profile?: string): Promise<boolean> =>
     ipcRenderer.invoke("gateway-command-pending", profile),
+  gatewayCommandStatus: (
+    profile?: string,
+  ): Promise<RemoteGatewayCommandStatus> =>
+    ipcRenderer.invoke("gateway-command-status", profile),
   setNativeAppearance: (source: "dark" | "light" | "system"): Promise<void> =>
     ipcRenderer.invoke("set-native-appearance", source),
 

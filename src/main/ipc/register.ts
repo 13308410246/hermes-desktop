@@ -262,6 +262,7 @@ import {
   remoteGatewayStatus,
   remoteRestartGateway,
   remoteGatewayCommandPending,
+  remoteGatewayCommandStatus,
   remoteStartGateway,
   remoteStopGateway,
 } from "../remote-gateway";
@@ -2101,6 +2102,11 @@ export function registerIpcHandlers(context: IpcContext): void {
   );
 
   // Gateway
+  ipcMain.handle("gateway-command-status", async (_event, profile?: string) =>
+    getConnectionConfig().mode === "remote"
+      ? remoteGatewayCommandStatus(profile)
+      : { pending: false },
+  );
   ipcMain.handle(
     "remote-gateway-action",
     async (_event, action: unknown, profile?: string) => {

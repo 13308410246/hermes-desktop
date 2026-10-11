@@ -3,6 +3,7 @@ import type { Attachment } from "../shared/attachments";
 import type {
   RemoteGatewayAction,
   RemoteGatewayActionResult,
+  RemoteGatewayCommandStatus,
 } from "../shared/gateway";
 import type { SessionModelOverride } from "../shared/model-override";
 import type { DesktopSessionContinuationItem } from "../shared/session-continuation";
@@ -595,6 +596,9 @@ interface HermesAPI {
   restartGateway: (profile?: string) => Promise<boolean>;
   gatewayStatus: (profile?: string) => Promise<boolean>;
   gatewayCommandPending: (profile?: string) => Promise<boolean>;
+  gatewayCommandStatus: (
+    profile?: string,
+  ) => Promise<RemoteGatewayCommandStatus>;
   setNativeAppearance: (source: "dark" | "light" | "system") => Promise<void>;
   getSpellCheckerInfo: () => Promise<{
     available: string[];
