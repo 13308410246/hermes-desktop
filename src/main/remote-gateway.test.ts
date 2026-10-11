@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import ts from "typescript";
+import type { RemoteGatewayActionResult } from "../shared/gateway";
 
 const { request, state } = vi.hoisted(() => ({
   request: vi.fn(),
@@ -19,6 +23,7 @@ vi.mock("./remote-api", () => ({ remoteDashboardRequestJson: request }));
 
 import {
   remoteGatewayStatus,
+  remoteGatewayAction,
   remoteGatewayCommandPending,
   remoteRestartGateway,
   remoteStartGateway,
@@ -59,6 +64,47 @@ function completed(action: keyof typeof actions): void {
 
 let testPort = 9119;
 
+function remoteActionIpcHandler(
+  config: () => { mode: string },
+  action: ReturnType<typeof vi.fn>,
+): (action: unknown, profile?: string) => Promise<RemoteGatewayActionResult> {
+  const source = readFileSync(
+    resolve(process.cwd(), "src/main/ipc/register.ts"),
+    "utf8",
+  );
+  const ast = ts.createSourceFile(
+    "register.ts",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  let handler: ts.Expression | undefined;
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.getText(ast) === "ipcMain.handle" &&
+      ts.isStringLiteral(node.arguments[0]) &&
+      node.arguments[0].text === "remote-gateway-action"
+    )
+      handler = node.arguments[1];
+    ts.forEachChild(node, visit);
+  };
+  visit(ast);
+  if (!handler) throw new Error("Remote gateway action IPC handler missing");
+  const compiled = ts.transpileModule(
+    `const handler = ${handler.getText(ast)};`,
+    {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    },
+  ).outputText;
+  const registered = new Function(
+    "getConnectionConfig",
+    "remoteGatewayAction",
+    `${compiled}; return handler;`,
+  )(config, action);
+  return (command, profile) => registered(undefined, command, profile);
+}
+
 describe("remote gateway lifecycle", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -94,6 +140,114 @@ describe("remote gateway lifecycle", () => {
     request.mockRejectedValue(new Error("down"));
     expect(await remoteGatewayStatus()).toBe(false);
   });
+
+  // @lat: [[main-process#Main Process#Remote Gateway management#Remote-only action transport]]
+  it("keeps the actual typed IPC branch Remote-only and forwards failure meaning unchanged", async () => {
+    let mode = "local";
+    const result = {
+      success: false,
+      error: "fetch failed",
+      failureKind: "unconfirmed",
+    };
+    const action = vi.fn().mockResolvedValue(result);
+    const handler = remoteActionIpcHandler(() => ({ mode }), action);
+    for (const unsupportedMode of ["local", "ssh"]) {
+      mode = unsupportedMode;
+      expect(await handler("stop", "work")).toMatchObject({
+        success: false,
+        failureKind: "failed",
+      });
+    }
+    mode = "remote";
+    expect(await handler("invalid", "work")).toMatchObject({
+      success: false,
+      failureKind: "failed",
+    });
+    expect(action).not.toHaveBeenCalled();
+    expect(await handler("restart", "work")).toBe(result);
+    expect(action).toHaveBeenCalledExactlyOnceWith("restart", "work");
+  });
+
+  // @lat: [[main-process#Main Process#Remote Gateway management#Completion read failure classification]]
+  it.each([
+    ["stop", "network"],
+    ["stop", "http"],
+    ["stop", "json"],
+    ["restart", "network"],
+    ["restart", "http"],
+    ["restart", "json"],
+  ] as const)(
+    "labels accepted %s completion %s failures unconfirmed until matching reconciliation",
+    async (action, failure) => {
+      state.connection = { ...state.connection, apiKey: "" };
+      let admitted = false;
+      let recovered = false;
+      let reads = 0;
+      const fetchMock = vi
+        .fn()
+        .mockImplementation(
+          async (url: string, options: { method: string }) => {
+            const path = new URL(url).pathname;
+            if (options.method === "POST") admitted = true;
+            if (admitted && !recovered && path.includes("/api/actions/")) {
+              if (failure === "network") throw new TypeError("fetch failed");
+              return new Response(
+                failure === "http"
+                  ? "<html>Unavailable</html>"
+                  : "invalid JSON",
+                { status: failure === "http" ? 500 : 200 },
+              );
+            }
+            const data =
+              path === "/api/status"
+                ? {
+                    gateway_running: !admitted || action !== "stop",
+                    gateway_pid: ++reads === 1 ? 21 : 22,
+                  }
+                : immediateRoute(path);
+            return new Response(JSON.stringify(data), { status: 200 });
+          },
+        );
+      vi.stubGlobal("fetch", fetchMock);
+      expect(await remoteGatewayAction(action, "work")).toMatchObject({
+        success: false,
+        failureKind: "unconfirmed",
+      });
+      await expect(remoteGatewayCommandPending("work")).rejects.toThrow();
+      expect((await remoteGatewayAction("start", "other")).success).toBe(false);
+      recovered = true;
+      expect(await remoteGatewayCommandPending("work")).toBe(false);
+      expect(
+        fetchMock.mock.calls.filter((call) => call[1].method === "POST"),
+      ).toHaveLength(1);
+      expect(
+        fetchMock.mock.calls.every((call) =>
+          call[0].startsWith(state.connection.remoteUrl),
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it.each(["stop", "restart"] as const)(
+    "labels matching accepted %s exit failure terminal",
+    async (action) => {
+      let admitted = false;
+      request.mockImplementation(
+        async (_conn, path: string, options: { method: string }) => {
+          if (options.method === "POST") admitted = true;
+          if (admitted && path.includes("/api/actions/"))
+            return { pid: 11, running: false, exit_code: 1 };
+          return immediateRoute(path);
+        },
+      );
+      expect(await remoteGatewayAction(action, "work")).toEqual({
+        success: false,
+        error: `Remote gateway ${action} failed (exit 1).`,
+        failureKind: "failed",
+      });
+      expect(await remoteGatewayCommandPending("work")).toBe(false);
+    },
+  );
 
   it.each(["start", "stop", "restart"] as const)(
     "confirms %s from the matching completed action and selected profile status",
@@ -144,6 +298,7 @@ describe("remote gateway lifecycle", () => {
     expect(await remoteStartGateway("work")).toEqual({
       success: false,
       error: expect.stringContaining("already pending"),
+      failureKind: "unconfirmed",
     });
     expect(
       request.mock.calls.filter((call) => call[2].method === "POST"),
@@ -215,6 +370,7 @@ describe("remote gateway lifecycle", () => {
     expect(await pending).toEqual({
       success: false,
       error: expect.stringContaining("server may still be processing"),
+      failureKind: "unconfirmed",
     });
     expect(await remoteGatewayCommandPending()).toBe(true);
     const postsBefore = request.mock.calls.filter(
@@ -369,6 +525,7 @@ describe("remote gateway lifecycle", () => {
     expect(await remoteStartGateway()).toEqual({
       success: false,
       error: "409: served by multiplexer",
+      failureKind: "failed",
     });
   });
 
@@ -493,6 +650,7 @@ describe("remote gateway lifecycle", () => {
       expect(await remoteStartGateway("work")).toEqual({
         success: false,
         error: "served by multiplexer",
+        failureKind: "failed",
       });
       expect(await remoteGatewayCommandPending("work")).toBe(false);
       refused = false;
@@ -557,6 +715,7 @@ describe("remote gateway lifecycle", () => {
       expect(await remoteStartGateway("work")).toEqual({
         success: false,
         error: `HTTP ${status}`,
+        failureKind: "failed",
       });
       expect(await remoteGatewayCommandPending("work")).toBe(false);
       refused = false;

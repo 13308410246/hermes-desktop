@@ -76,6 +76,8 @@ The Remote Gateway screen controls the server's gateway and messaging platforms 
 
 Commands for one remote URL cannot overlap, including different profiles because the action registry is server-wide. The four-minute budget allows server-side draining; timeout retains an unconfirmed operation lock without cancelling the command. Read-only refresh confirms completion before releasing controls. Status errors, invalid JSON and replaced action records retain uncertainty.
 
+[[src/main/remote-gateway.ts#remoteGatewayAction]] returns a typed Remote action outcome through `remote-gateway-action` IPC and preload. Retained admission means `unconfirmed`; known refusal or matching failed exit means `failed`. The screen uses this kind rather than message text. Legacy Local and SSH lifecycle handlers retain their existing contracts.
+
 [[src/renderer/src/screens/Gateway/Gateway.tsx#Gateway]] keeps successful status when platform settings fail, hides local API key controls in Remote mode, and cancels pending status timers on unmount. Connection, profile, mode and configuration revisions reset its state; commands stay disabled until IPC confirms completion.
 
 [[src/renderer/src/screens/Layout/useRemoteOnlyMode.ts#useRemoteOnlyMode]] refreshes mode after connection or configuration changes, rejects late answers from earlier targets, and hides local mutation controls while the new target is unresolved.
@@ -132,7 +134,19 @@ A genuine terminal Remote Stop or Restart failure remains visible when refresh r
 
 ### Pending reads preserve command meaning
 
-A command's error determines terminal failure versus explicit completion uncertainty. Pending-status reads affect controls only; failed or true reads cannot convert a known command failure into an explanation that later reconciliation clears.
+A command's typed outcome determines failure versus completion uncertainty. Pending-status reads affect controls only; failed or true reads cannot convert a known command failure into an explanation that later reconciliation clears.
+
+### Remote-only action transport
+
+The action IPC rejects Local, SSH and invalid actions before dispatch. Supported Remote actions retain the helper's typed failure meaning through IPC; legacy local lifecycle signatures remain unchanged.
+
+### Completion read failure classification
+
+Accepted Stop and Restart commands keep an unconfirmed outcome after network, HTTP or JSON completion-read failures. Matching later reconciliation releases the retained record; known command exit failures are classified as failed.
+
+### Completion read errors reconcile in Gateway
+
+Gateway retains unconfirmed network, HTTP and JSON errors while completion is pending, then clears them after matching reconciliation. Known command failures remain visible independently of subsequent pending reads.
 
 ### Uncertain dispatch and explicit refusals
 

@@ -1,9 +1,13 @@
 import { getConnectionConfig, type ConnectionConfig } from "./config";
 import { normaliseRemoteUrl } from "./hermes";
 import { remoteDashboardRequestJson } from "./remote-api";
+import type {
+  RemoteGatewayAction,
+  RemoteGatewayActionResult,
+} from "../shared/gateway";
 
-type GatewayAction = "start" | "stop" | "restart";
-type GatewayActionResult = { success: boolean; error?: string };
+type GatewayAction = RemoteGatewayAction;
+type GatewayActionResult = RemoteGatewayActionResult;
 type GatewayStatus = { gateway_running: boolean; gateway_pid?: number | null };
 type ActionStatus = {
   pid: number | null;
@@ -221,6 +225,7 @@ async function spawnGatewayAction(
     return {
       success: false,
       error: "A gateway command is already pending for this remote profile.",
+      failureKind: "unconfirmed",
     };
   // Reserve before the asynchronous preflight so concurrent desktop requests
   // cannot both pass it and submit overlapping commands.
@@ -316,11 +321,18 @@ async function spawnGatewayAction(
     return {
       success: false,
       error: err instanceof Error ? err.message : String(err),
+      // Retained admission, rather than error wording, determines uncertainty.
+      failureKind: unconfirmedOperations.has(key) ? "unconfirmed" : "failed",
     };
   } finally {
     pendingActions.delete(key);
   }
 }
+
+export const remoteGatewayAction = (
+  action: RemoteGatewayAction,
+  profile?: string,
+): Promise<RemoteGatewayActionResult> => spawnGatewayAction(action, profile);
 
 export const remoteStartGateway = (
   profile?: string,

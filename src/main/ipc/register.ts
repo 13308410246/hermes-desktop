@@ -258,6 +258,7 @@ import {
   remoteGetOAuthProviderStatuses,
 } from "../remote-provider-statuses";
 import {
+  remoteGatewayAction,
   remoteGatewayStatus,
   remoteRestartGateway,
   remoteGatewayCommandPending,
@@ -2101,6 +2102,22 @@ export function registerIpcHandlers(context: IpcContext): void {
 
   // Gateway
   ipcMain.handle(
+    "remote-gateway-action",
+    async (_event, action: unknown, profile?: string) => {
+      if (
+        getConnectionConfig().mode !== "remote" ||
+        (action !== "start" && action !== "stop" && action !== "restart")
+      ) {
+        return {
+          success: false,
+          error: "Remote gateway action is unavailable for this connection.",
+          failureKind: "failed",
+        };
+      }
+      return remoteGatewayAction(action, profile);
+    },
+  );
+  ipcMain.handle(
     "gateway-command-pending",
     async (_event, profile?: string) => {
       return getConnectionConfig().mode === "remote"
@@ -2122,7 +2139,7 @@ export function registerIpcHandlers(context: IpcContext): void {
       return {
         success: result.success,
         running: result.success,
-        ...(result.error ? { error: result.error } : {}),
+        ...(!result.success ? { error: result.error } : {}),
       };
     }
     return startGatewayDetailed();

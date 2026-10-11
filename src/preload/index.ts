@@ -1,6 +1,10 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { AppLocale } from "../shared/i18n/types";
 import type { Attachment } from "../shared/attachments";
+import type {
+  RemoteGatewayAction,
+  RemoteGatewayActionResult,
+} from "../shared/gateway";
 import type { SessionModelOverride } from "../shared/model-override";
 import type { DesktopSessionContinuationItem } from "../shared/session-continuation";
 import type { DesktopSessionLocalError } from "../shared/session-continuation";
@@ -849,6 +853,11 @@ const hermesAPI = {
     ipcRenderer.invoke("approval-respond", { requestId, choice, runId }),
 
   // Gateway
+  remoteGatewayAction: (
+    action: RemoteGatewayAction,
+    profile?: string,
+  ): Promise<RemoteGatewayActionResult> =>
+    ipcRenderer.invoke("remote-gateway-action", action, profile),
   startGateway: (profile?: string): Promise<GatewayStartResult> =>
     ipcRenderer.invoke("start-gateway", profile),
   stopGateway: (profile?: string): Promise<boolean> =>

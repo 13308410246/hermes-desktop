@@ -21,6 +21,7 @@ function installApi(overrides: Record<string, unknown> = {}): void {
       getApiServerKeyStatus: vi.fn().mockResolvedValue({ hasKey: true }),
       gatewayStatus: vi.fn().mockResolvedValue(true),
       gatewayCommandPending: vi.fn().mockResolvedValue(false),
+      remoteGatewayAction: vi.fn().mockResolvedValue({ success: true }),
       getPlatformEnabled: vi.fn().mockResolvedValue({}),
       restartGateway: vi.fn().mockResolvedValue(true),
       startGateway: vi
@@ -96,7 +97,7 @@ describe("Gateway screen with a selected profile / failing platform list", () =>
       });
       installApi({
         gatewayStatus: vi.fn().mockResolvedValue(action !== "start"),
-        [`${action}Gateway`]: vi.fn().mockReturnValue(pending),
+        remoteGatewayAction: vi.fn().mockReturnValue(pending),
       });
       render(<Gateway profile="work" remoteMode />);
       await settle();
@@ -107,13 +108,20 @@ describe("Gateway screen with a selected profile / failing platform list", () =>
         .closest("button") as HTMLButtonElement;
       fireEvent.click(commandButton);
       await settle();
+      expect(window.hermesAPI.remoteGatewayAction).toHaveBeenCalledWith(
+        action,
+        "work",
+      );
+      expect(window.hermesAPI.startGateway).not.toHaveBeenCalled();
+      expect(window.hermesAPI.stopGateway).not.toHaveBeenCalled();
+      expect(window.hermesAPI.restartGateway).not.toHaveBeenCalled();
       expect(commandButton.disabled).toBe(true);
       const restartButton = screen
         .queryByText("gateway.restart")
         ?.closest("button");
       if (restartButton) expect(restartButton.disabled).toBe(true);
       await act(async () => {
-        resolve(action === "start" ? { success: true, running: true } : true);
+        resolve({ success: true });
         await pending;
       });
       expect(
@@ -134,7 +142,7 @@ describe("Gateway screen with a selected profile / failing platform list", () =>
     const unsubscribe = vi.fn();
     installApi({
       gatewayStatus: vi.fn().mockResolvedValue(false),
-      startGateway: vi.fn().mockReturnValue(pending),
+      remoteGatewayAction: vi.fn().mockReturnValue(pending),
       onConnectionConfigChanged: vi.fn().mockImplementation((callback) => {
         changed = callback;
         return unsubscribe;
@@ -151,7 +159,7 @@ describe("Gateway screen with a selected profile / failing platform list", () =>
       window.hermesAPI.gatewayStatus as ReturnType<typeof vi.fn>
     ).mock.calls.length;
     await act(async () => {
-      resolve({ success: true, running: true });
+      resolve({ success: true });
       await pending;
     });
     await act(async () => {
@@ -170,11 +178,13 @@ describe("Gateway screen with a selected profile / failing platform list", () =>
     installApi({
       gatewayStatus: vi.fn().mockImplementation(async () => running),
       gatewayCommandPending: vi.fn().mockImplementation(async () => pending),
-      stopGateway: vi.fn().mockImplementation(async () => {
+      remoteGatewayAction: vi.fn().mockImplementation(async () => {
         pending = true;
-        throw new Error(
-          "Completion unconfirmed; server may still be processing",
-        );
+        return {
+          success: false,
+          error: "Completion unconfirmed; server may still be processing",
+          failureKind: "unconfirmed",
+        };
       }),
     });
     render(<Gateway profile="work" remoteMode />);
@@ -225,9 +235,13 @@ describe("Gateway screen with a selected profile / failing platform list", () =>
       let running = true;
       installApi({
         gatewayStatus: vi.fn().mockImplementation(async () => running),
-        stopGateway: vi.fn().mockImplementation(async () => {
+        remoteGatewayAction: vi.fn().mockImplementation(async () => {
           running = afterFailureRunning;
-          throw new Error("Remote gateway stop failed (exit 1).");
+          return {
+            success: false,
+            error: "Remote gateway stop failed (exit 1).",
+            failureKind: "failed",
+          };
         }),
       });
       render(<Gateway profile="work" remoteMode />);
@@ -254,13 +268,71 @@ describe("Gateway screen with a selected profile / failing platform list", () =>
     },
   );
 
+  // @lat: [[main-process#Main Process#Remote Gateway management#Completion read errors reconcile in Gateway]]
+  it.each([
+    ["stop", "fetch failed"],
+    ["stop", "HTTP 500"],
+    ["stop", "Unexpected token < in JSON"],
+    ["restart", "fetch failed"],
+    ["restart", "HTTP 500"],
+    ["restart", "Unexpected token < in JSON"],
+  ])(
+    "clears accepted %s completion error %s only after matching refresh",
+    async (action, explanation) => {
+      let pending = false;
+      let running = true;
+      installApi({
+        gatewayStatus: vi.fn().mockImplementation(async () => running),
+        gatewayCommandPending: vi.fn().mockImplementation(async () => pending),
+        remoteGatewayAction: vi.fn().mockImplementation(async () => {
+          pending = true;
+          return {
+            success: false,
+            error: explanation,
+            failureKind: "unconfirmed",
+          };
+        }),
+      });
+      render(<Gateway profile="work" remoteMode />);
+      await settle();
+      fireEvent.click(
+        screen.getByText(action === "stop" ? "common.stop" : "gateway.restart"),
+      );
+      await settle();
+      expect(window.hermesAPI.remoteGatewayAction).toHaveBeenCalledWith(
+        action,
+        "work",
+      );
+      expect(screen.getByText(explanation)).toBeTruthy();
+      fireEvent.click(screen.getByText("gateway.refresh"));
+      await settle();
+      expect(screen.getByText(explanation)).toBeTruthy();
+      expect(
+        (screen.getByText("common.stop").closest("button") as HTMLButtonElement)
+          .disabled,
+      ).toBe(true);
+      pending = false;
+      running = action !== "stop";
+      fireEvent.click(screen.getByText("gateway.refresh"));
+      await settle();
+      expect(screen.queryByText(explanation)).toBeNull();
+      expect(
+        (
+          screen
+            .getByText(running ? "common.stop" : "common.start")
+            .closest("button") as HTMLButtonElement
+        ).disabled,
+      ).toBe(false);
+    },
+  );
+
   it("preserves a genuine remote Restart failure when the old gateway remains running", async () => {
     installApi({
-      restartGateway: vi
-        .fn()
-        .mockRejectedValue(
-          new Error("Remote gateway restart failed (exit 1)."),
-        ),
+      remoteGatewayAction: vi.fn().mockResolvedValue({
+        success: false,
+        error: "Remote gateway restart failed (exit 1).",
+        failureKind: "failed",
+      }),
     });
     render(<Gateway profile="work" remoteMode />);
     await settle();
@@ -297,9 +369,13 @@ describe("Gateway screen with a selected profile / failing platform list", () =>
             throw new Error("Cannot read pending status");
           return true;
         }),
-        stopGateway: vi.fn().mockImplementation(async () => {
+        remoteGatewayAction: vi.fn().mockImplementation(async () => {
           phase = "failed";
-          throw new Error("Remote gateway stop failed (exit 1).");
+          return {
+            success: false,
+            error: "Remote gateway stop failed (exit 1).",
+            failureKind: "failed",
+          };
         }),
       });
       render(<Gateway profile="work" remoteMode />);
@@ -340,9 +416,7 @@ describe("Gateway screen with a selected profile / failing platform list", () =>
       });
       installApi({
         gatewayStatus: vi.fn().mockResolvedValue(action === "restart"),
-        [action === "start" ? "startGateway" : "restartGateway"]: vi
-          .fn()
-          .mockReturnValue(pending),
+        remoteGatewayAction: vi.fn().mockReturnValue(pending),
       });
       const { unmount } = render(<Gateway profile="work" remoteMode />);
       await settle();
@@ -356,7 +430,7 @@ describe("Gateway screen with a selected profile / failing platform list", () =>
       ).mock.calls.length;
       unmount();
       await act(async () => {
-        resolve(action === "start" ? { success: true, running: false } : true);
+        resolve({ success: true });
         await pending;
       });
       await act(async () => {
@@ -394,9 +468,13 @@ describe("Gateway screen with a selected profile / failing platform list", () =>
     let pending = false;
     installApi({
       gatewayCommandPending: vi.fn().mockImplementation(async () => pending),
-      restartGateway: vi.fn().mockImplementation(async () => {
+      remoteGatewayAction: vi.fn().mockImplementation(async () => {
         pending = true;
-        throw new Error(explanation);
+        return {
+          success: false,
+          error: explanation,
+          failureKind: "unconfirmed",
+        };
       }),
     });
     render(<Gateway profile="work" remoteMode />);

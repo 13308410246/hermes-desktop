@@ -17,6 +17,7 @@ import {
 import { useI18n } from "../../components/useI18n";
 import BrandLogo from "../../components/common/BrandLogo";
 import { useConnectionTargetRevision } from "../../hooks/useConnectionTargetRevision";
+import type { RemoteGatewayAction } from "../../../../shared/gateway";
 import type {
   MessagingEnvVarInfo,
   MessagingPlatformInfo,
@@ -193,6 +194,10 @@ function GatewayContent({
     setGatewayError(null);
     gatewayErrorUnconfirmedRef.current = false;
     gatewayErrorTerminalRef.current = false;
+    if (remoteMode) {
+      await runRemoteGatewayAction(gatewayRunning ? "stop" : "start");
+      return;
+    }
     if (gatewayRunning) {
       try {
         await window.hermesAPI.stopGateway(profile);
@@ -260,6 +265,10 @@ function GatewayContent({
     setGatewayError(null);
     gatewayErrorUnconfirmedRef.current = false;
     gatewayErrorTerminalRef.current = false;
+    if (remoteMode) {
+      await runRemoteGatewayAction("restart");
+      return;
+    }
     try {
       const restarted = await window.hermesAPI.restartGateway(profile);
       if (!mountedRef.current) return;
@@ -279,14 +288,43 @@ function GatewayContent({
           gatewayStatusTimeoutRef.current = null;
         }, 5000);
       }
-    } catch (err) {
+    } catch (_err) {
       if (!mountedRef.current) return;
       await loadConfig();
       if (!mountedRef.current) return;
+      reportGatewayActionError(t("gateway.restartFailed"));
+    } finally {
+      await refreshPendingCommand();
+      if (mountedRef.current) setGatewayBusy(false);
+    }
+  }
+
+  async function runRemoteGatewayAction(
+    action: RemoteGatewayAction,
+  ): Promise<void> {
+    try {
+      const result = await window.hermesAPI.remoteGatewayAction(
+        action,
+        profile,
+      );
+      if (!mountedRef.current) return;
+      if (!result.success) {
+        reportGatewayActionError(result.error, result.failureKind);
+        return;
+      }
+      setGatewayRunning(action !== "stop");
+      if (action !== "stop") {
+        gatewayStatusTimeoutRef.current = setTimeout(() => {
+          void loadConfig();
+          gatewayStatusTimeoutRef.current = null;
+        }, 5000);
+      }
+    } catch (error) {
+      if (!mountedRef.current) return;
+      // An IPC transport failure cannot prove whether main admitted the action.
       reportGatewayActionError(
-        remoteMode && err instanceof Error
-          ? err.message
-          : t("gateway.restartFailed"),
+        error instanceof Error ? error.message : String(error),
+        "unconfirmed",
       );
     } finally {
       await refreshPendingCommand();
@@ -294,16 +332,13 @@ function GatewayContent({
     }
   }
 
-  function reportGatewayActionError(message: string): void {
-    // Error meaning comes from the command, not a later pending-status read.
-    // The dashboard client explicitly describes unconfirmed completion/receipts.
-    const unconfirmed =
-      remoteMode &&
-      /completion (?:could not be confirmed|unconfirmed)|admission could not be confirmed|server may still be processing|did not return a trackable action|action was replaced|did not return a completed action result|gateway command.*(?:pending|awaiting completion)/i.test(
-        message,
-      );
-    gatewayErrorUnconfirmedRef.current = unconfirmed;
-    gatewayErrorTerminalRef.current = remoteMode && !unconfirmed;
+  function reportGatewayActionError(
+    message: string,
+    failureKind?: "failed" | "unconfirmed",
+  ): void {
+    // Command outcome and control availability are independent wire results.
+    gatewayErrorUnconfirmedRef.current = failureKind === "unconfirmed";
+    gatewayErrorTerminalRef.current = failureKind === "failed";
     setGatewayError(message);
   }
 
