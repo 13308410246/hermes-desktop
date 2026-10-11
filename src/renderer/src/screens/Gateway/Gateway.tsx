@@ -268,11 +268,15 @@ function GatewayContent({
           gatewayStatusTimeoutRef.current = null;
         }, 5000);
       }
-    } catch {
+    } catch (err) {
       if (!mountedRef.current) return;
       await loadConfig();
       if (!mountedRef.current) return;
-      setGatewayError(t("gateway.restartFailed"));
+      setGatewayError(
+        remoteMode && err instanceof Error
+          ? err.message
+          : t("gateway.restartFailed"),
+      );
     } finally {
       await refreshPendingCommand();
       if (mountedRef.current) setGatewayBusy(false);

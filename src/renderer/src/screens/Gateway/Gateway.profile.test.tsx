@@ -270,4 +270,46 @@ describe("Gateway screen with a selected profile / failing platform list", () =>
         .length,
     ).toBe(callsBefore);
   });
+
+  // @lat: [[main-process#Main Process#Remote Gateway management#Remote restart failure explanation]]
+  it("preserves a pending remote restart's actual failure explanation across status refresh", async () => {
+    const explanation =
+      "Remote gateway restart completion could not be confirmed. The server may still be processing the command.";
+    let pending = false;
+    installApi({
+      gatewayCommandPending: vi.fn().mockImplementation(async () => pending),
+      restartGateway: vi.fn().mockImplementation(async () => {
+        pending = true;
+        throw new Error(explanation);
+      }),
+    });
+    render(<Gateway profile="work" remoteMode />);
+    await settle();
+    fireEvent.click(screen.getByText("gateway.restart"));
+    await settle();
+    expect(screen.getByText(explanation)).toBeTruthy();
+    expect(screen.queryByText("gateway.restartFailed")).toBeNull();
+    expect(
+      (
+        screen
+          .getByText("gateway.restart")
+          .closest("button") as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000);
+    });
+    expect(screen.getByText(explanation)).toBeTruthy();
+    pending = false;
+    fireEvent.click(screen.getByText("gateway.refresh"));
+    await settle();
+    expect(screen.queryByText(explanation)).toBeNull();
+    expect(
+      (
+        screen
+          .getByText("gateway.restart")
+          .closest("button") as HTMLButtonElement
+      ).disabled,
+    ).toBe(false);
+  });
 });

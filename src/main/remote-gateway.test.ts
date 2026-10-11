@@ -462,6 +462,50 @@ describe("remote gateway lifecycle", () => {
     },
   );
 
+  // @lat: [[main-process#Main Process#Remote Gateway management#Keyless refusal releases admission]]
+  it.each(["token", "auto"])(
+    "releases a keyless %s POST refusal and allows a later tracked admission",
+    async (authMode) => {
+      state.connection = {
+        ...state.connection,
+        apiKey: "",
+        remoteAuthMode: authMode,
+      };
+      request.mockRejectedValue(
+        new Error("Remote Hermes dashboard token is not configured."),
+      );
+      let refused = true;
+      const fetchMock = vi
+        .fn()
+        .mockImplementation(
+          async (url: string, options: { method: string }) => {
+            const path = new URL(url).pathname;
+            if (options.method === "POST" && refused)
+              return {
+                ok: false,
+                status: 409,
+                json: async () => ({ detail: "served by multiplexer" }),
+              };
+            return { ok: true, json: async () => immediateRoute(path) };
+          },
+        );
+      vi.stubGlobal("fetch", fetchMock);
+      expect(await remoteStartGateway("work")).toEqual({
+        success: false,
+        error: "served by multiplexer",
+      });
+      expect(await remoteGatewayCommandPending("work")).toBe(false);
+      refused = false;
+      expect(await remoteStartGateway("work")).toEqual({ success: true });
+      expect(
+        fetchMock.mock.calls.filter((call) => call[1].method === "POST"),
+      ).toHaveLength(2);
+      expect(
+        fetchMock.mock.calls.every((call) => call[0].endsWith("?profile=work")),
+      ).toBe(true);
+    },
+  );
+
   it("rejects HTML-200 keyless responses rather than confirming Stop", async () => {
     state.connection = { ...state.connection, apiKey: "" };
     vi.stubGlobal(

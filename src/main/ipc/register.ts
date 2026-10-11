@@ -2155,7 +2155,9 @@ export function registerIpcHandlers(context: IpcContext): void {
       return sshGatewayStatus(conn.ssh);
     }
     if (conn.mode === "remote") {
-      return (await remoteRestartGateway(profile)).success;
+      const result = await remoteRestartGateway(profile);
+      if (!result.success) throw new Error(result.error);
+      return true;
     }
     return restartGateway(profile);
   });

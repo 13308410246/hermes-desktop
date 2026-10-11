@@ -100,6 +100,14 @@ Switching connections on the same screen refreshes its Remote restrictions. Outd
 
 Explicit and resolved auto keyless token dashboards retain scoped JSON status, Start, Stop and Restart requests. OAuth or auth-probe failures never trigger anonymous requests, and HTML responses cannot become successful completion.
 
+### Keyless refusal releases admission
+
+Keyless token POST refusals retain their HTTP status so an explicit rejection releases the admission lock. A later valid command can be tracked normally, including auto-detected token dashboards.
+
+### Remote restart failure explanation
+
+Remote restart IPC forwards the server's failure reason to Gateway. Unconfirmed-command explanations remain visible with blocked controls through status refresh and clear after confirmed reconciliation.
+
 ### Lifecycle completion and overlap
 
 Stop remains pending until its matching command exits successfully and the gateway is stopped. A concurrent command for that remote server, including another profile, is rejected before another mutation is submitted.
