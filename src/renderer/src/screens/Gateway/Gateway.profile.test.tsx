@@ -282,6 +282,54 @@ describe("Gateway screen with a selected profile / failing platform list", () =>
     ).toBe(false);
   });
 
+  // @lat: [[main-process#Main Process#Remote Gateway management#Pending reads preserve command meaning]]
+  it.each(["pending", "rejected"])(
+    "keeps a terminal Stop failure when pending lookup is %s and later recovers",
+    async (lookup) => {
+      let phase: "idle" | "failed" | "recovered" = "idle";
+      installApi({
+        gatewayStatus: vi
+          .fn()
+          .mockImplementation(async () => phase !== "recovered"),
+        gatewayCommandPending: vi.fn().mockImplementation(async () => {
+          if (phase !== "failed") return false;
+          if (lookup === "rejected")
+            throw new Error("Cannot read pending status");
+          return true;
+        }),
+        stopGateway: vi.fn().mockImplementation(async () => {
+          phase = "failed";
+          throw new Error("Remote gateway stop failed (exit 1).");
+        }),
+      });
+      render(<Gateway profile="work" remoteMode />);
+      await settle();
+      fireEvent.click(screen.getByText("common.stop"));
+      await settle();
+      expect(
+        screen.getByText("Remote gateway stop failed (exit 1)."),
+      ).toBeTruthy();
+      expect(
+        (screen.getByText("common.stop").closest("button") as HTMLButtonElement)
+          .disabled,
+      ).toBe(true);
+      phase = "recovered";
+      fireEvent.click(screen.getByText("gateway.refresh"));
+      await settle();
+      expect(screen.getByText("gateway.stopped")).toBeTruthy();
+      expect(
+        screen.getByText("Remote gateway stop failed (exit 1)."),
+      ).toBeTruthy();
+      expect(
+        (
+          screen
+            .getByText("common.start")
+            .closest("button") as HTMLButtonElement
+        ).disabled,
+      ).toBe(false);
+    },
+  );
+
   // @lat: [[main-process#Main Process#Remote Gateway management#Pending actions after teardown]]
   it.each(["start", "restart"])(
     "does not schedule status reads when pending %s resolves after unmount",

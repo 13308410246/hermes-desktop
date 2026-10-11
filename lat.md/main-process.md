@@ -130,6 +130,10 @@ After confirmed Stop reconciliation, the old uncertainty explanation clears even
 
 A genuine terminal Remote Stop or Restart failure remains visible when refresh reports either stopped or running. Only explanations marked as uncertain are cleared by delayed completion reconciliation.
 
+### Pending reads preserve command meaning
+
+A command's error determines terminal failure versus explicit completion uncertainty. Pending-status reads affect controls only; failed or true reads cannot convert a known command failure into an explanation that later reconciliation clears.
+
 ### Uncertain dispatch and explicit refusals
 
 A reservation exists before dispatch because an HTTP failure can hide an accepted command. Missing admission PID remains uncertain; explicit HTTP refusals release the reservation because the server rejected the mutation.

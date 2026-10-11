@@ -200,8 +200,7 @@ function GatewayContent({
         setGatewayRunning(false);
       } catch (err) {
         if (!mountedRef.current) return;
-        gatewayErrorTerminalRef.current = remoteMode;
-        setGatewayError(
+        reportGatewayActionError(
           err instanceof Error ? err.message : t("gateway.stopFailed"),
         );
       } finally {
@@ -268,8 +267,7 @@ function GatewayContent({
       if (!restarted) {
         await loadConfig();
         if (!mountedRef.current) return;
-        gatewayErrorTerminalRef.current = remoteMode;
-        setGatewayError(t("gateway.restartFailed"));
+        reportGatewayActionError(t("gateway.restartFailed"));
       } else {
         gatewayStatusTimeoutRef.current = setTimeout(async () => {
           const status = await window.hermesAPI.gatewayStatus(profile);
@@ -285,8 +283,7 @@ function GatewayContent({
       if (!mountedRef.current) return;
       await loadConfig();
       if (!mountedRef.current) return;
-      gatewayErrorTerminalRef.current = remoteMode;
-      setGatewayError(
+      reportGatewayActionError(
         remoteMode && err instanceof Error
           ? err.message
           : t("gateway.restartFailed"),
@@ -297,20 +294,29 @@ function GatewayContent({
     }
   }
 
+  function reportGatewayActionError(message: string): void {
+    // Error meaning comes from the command, not a later pending-status read.
+    // The dashboard client explicitly describes unconfirmed completion/receipts.
+    const unconfirmed =
+      remoteMode &&
+      /completion (?:could not be confirmed|unconfirmed)|admission could not be confirmed|server may still be processing|did not return a trackable action|action was replaced|did not return a completed action result|gateway command.*(?:pending|awaiting completion)/i.test(
+        message,
+      );
+    gatewayErrorUnconfirmedRef.current = unconfirmed;
+    gatewayErrorTerminalRef.current = remoteMode && !unconfirmed;
+    setGatewayError(message);
+  }
+
   async function refreshPendingCommand(): Promise<void> {
     if (!remoteMode || !mountedRef.current) return;
     try {
       const pending = await window.hermesAPI.gatewayCommandPending(profile);
       if (mountedRef.current) {
         setRemoteCommandPending(pending);
-        gatewayErrorUnconfirmedRef.current = pending;
-        if (pending) gatewayErrorTerminalRef.current = false;
       }
     } catch {
       if (mountedRef.current) {
         setRemoteCommandPending(true);
-        gatewayErrorUnconfirmedRef.current = true;
-        gatewayErrorTerminalRef.current = false;
       }
     }
   }
