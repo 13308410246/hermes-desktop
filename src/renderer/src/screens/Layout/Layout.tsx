@@ -1,4 +1,12 @@
-import { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import {
+  lazy,
+  Suspense,
+  useState,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+} from "react";
 import Chat from "../Chat/Chat";
 import {
   dbItemsToChatMessages,
@@ -29,7 +37,6 @@ import Skills from "../Skills/Skills";
 import Memory from "../Memory/Memory";
 import Tools from "../Tools/Tools";
 import Gateway from "../Gateway/Gateway";
-import Office from "../Office/Office";
 import Providers from "../Providers/Providers";
 import Schedules from "../Schedules/Schedules";
 import Kanban from "../Kanban/Kanban";
@@ -53,6 +60,9 @@ import {
 } from "../../assets/icons";
 import type { LucideIcon } from "lucide-react";
 import { useI18n } from "../../components/useI18n";
+
+// @lat: [[main-process#Deferred Office loading]]
+const Office = lazy(() => import("../Office/Office"));
 
 type View =
   | "chat"
@@ -958,7 +968,9 @@ function Layout({
 
           {visitedViews.has("office") && (
             <div style={paneStyle("office")}>
-              <Office profile={activeProfile} visible={view === "office"} />
+              <Suspense fallback={null}>
+                <Office profile={activeProfile} visible={view === "office"} />
+              </Suspense>
             </div>
           )}
 
