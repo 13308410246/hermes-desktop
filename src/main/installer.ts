@@ -43,6 +43,9 @@ import {
   INSTALLER_VERIFICATION_FAILED,
   verifiedInstallerCommand,
 } from "./installer-download";
+// Bundled-backend support: when resources/hermes-bundle/ is present in the
+// packaged app, we can skip downloading and deploy the pre-built bundle instead.
+import { hasBundledBackend, setupBundledBackend, getBundleInfo } from "./installer-bundled";
 
 const IS_WINDOWS = process.platform === "win32";
 
@@ -957,6 +960,28 @@ export async function runInstall(
     });
   }
 
+  // ── Bundled-backend fast path ─────────────────────────────────────────────
+  // When the installer ships with a pre-built backend bundle, we can skip
+  // downloading (~5-15 min on slow connections) entirely. The bundle is
+  // copied to HERMES_HOME/hermes-agent in seconds and the user goes straight
+  // to the API-key entry screen.
+  if (hasBundledBackend()) {
+    emit("\u2705 检测到内置后端(bundled backend)，跳过下载安装...\n");
+    const bundleInfo = getBundleInfo();
+    emit(`   Bundle: ${bundleInfo.version ?? "unknown"} | Python: ${bundleInfo.pythonVersion ?? "n/a"}\n\n`);
+    try {
+      await setupBundledBackend(emit);
+      emit("\n\u2705 内置后端就绪！可以填 API Key 了。\n");
+      return;
+    } catch (err) {
+      emit(
+        `\n\u26a0 内置后端初始化失败，降级到在线安装: ${(err as Error).message}\n\n`,
+      );
+      // fall through to the original download path
+    }
+  }
+  // ── End bundled-backend fast path ────────────────────────────────────────
+
   emit("Running official Hermes install script...\n");
 
   if (IS_WINDOWS) {
@@ -967,7 +992,7 @@ export async function runInstall(
   // before install.sh runs. Playwright's `install --with-deps` later invokes
   // `sudo apt-get` from a subprocess with no TTY — without a warm cache it
   // hangs forever waiting on stdin. See issues #104 and #109.
-  emit("→ Checking administrator access...\n");
+  emit("\u2192 Checking administrator access...\n");
   const sudoPrecache = await precacheSudoCredentials(parentWindow ?? null);
   if (sudoPrecache.cancelled) {
     throw new Error(
@@ -976,10 +1001,10 @@ export async function runInstall(
   }
   if (!sudoPrecache.ok) {
     emit(
-      "⚠ Administrator password was not accepted. Continuing without — install may stall at the browser dependency step.\n",
+      "\u26a0 Administrator password was not accepted. Continuing without \u2014 install may stall at the browser dependency step.\n",
     );
   } else {
-    emit("✓ Administrator access granted\n");
+    emit("\u2713 Administrator access granted\n");
   }
 
   // Keep the legacy askpass bridge as a fallback for any sudo call that
@@ -1537,3 +1562,6 @@ export function readLogs(
     return { content: "", path: fullPath };
   }
 }
+
+// Re-export bundle info for renderer-side UI (e.g. "using bundled backend v1.2.3")
+export { getBundleInfo } from "./installer-bundled";
