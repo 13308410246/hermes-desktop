@@ -85,6 +85,14 @@ jobs:
       - name: Rebuild native dependencies for target arch
         run: npx electron-builder install-app-deps --arch=${{ matrix.arch }}
 
+      # ── Zero-config bundled backend ──────────────────────────────────────────
+      # Bundle Python + hermes-agent site-packages into resources/hermes-bundle/
+      # so the desktop installer ships a complete backend that needs zero setup.
+      # On macOS we bundle only site-packages (no embeddable Python — use system Python).
+      - name: Bundle Hermes backend (zero-config)
+        run: |
+          node scripts/bundle-hermes-backend.mjs --platform=darwin --arch=${{ matrix.arch }}
+
       - name: Build app
         env:
           VITE_ANALYTICS_BASE_URL: ${{ vars.VITE_ANALYTICS_BASE_URL }}
@@ -172,6 +180,11 @@ jobs:
       - name: Rebuild native dependencies for target arch
         run: npx electron-builder install-app-deps --arch=${{ matrix.arch }}
 
+      # ── Zero-config bundled backend ──────────────────────────────────────────
+      - name: Bundle Hermes backend (zero-config)
+        run: |
+          node scripts/bundle-hermes-backend.mjs --platform=linux --arch=${{ matrix.arch }}
+
       - name: Build app
         env:
           VITE_ANALYTICS_BASE_URL: ${{ vars.VITE_ANALYTICS_BASE_URL }}
@@ -224,6 +237,13 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      # ── Zero-config bundled backend ──────────────────────────────────────────
+      # Download Python 3.12 embeddable + pip install hermes-agent into
+      # resources/hermes-bundle/. The result ships inside the NSIS installer.
+      - name: Bundle Hermes backend (zero-config)
+        run: |
+          node scripts/bundle-hermes-backend.mjs --platform=win32 --arch=x64
 
       - name: Build app
         env:
