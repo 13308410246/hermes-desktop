@@ -21,6 +21,23 @@ files:
 asarUnpack:
   - resources/**
   - node_modules/better-sqlite3/prebuilds/*.node
+# ── Bundled backend ────────────────────────────────────────────────────────────
+# Ship resources/hermes-bundle/ as a plain-file extra resource (not inside ASAR)
+# so the runtime can copy it out without ASAR path complications.
+# The bundle contains:
+#   python/          — Python 3.12 embeddable (Windows only; POSIX uses system Python)
+#   site-packages/   — hermes-agent + all transitive pip deps
+#   bin/hermes-agent — CLI shim invoked by the desktop
+#   version.json     — build metadata
+#
+# On Windows NSIS installers the bundled files land in:
+#   <install-dir>/resources/hermes-bundle/
+# ────────────────────────────────────────────────────────────────────────────────
+extraResources:
+  - from: resources/hermes-bundle
+    to: hermes-bundle
+    filter:
+      - "**/*"
 win:
   executableName: hermes-agent
   target:
