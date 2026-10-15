@@ -1,0 +1,25 @@
+This file is a reference patch. See the actual diff below.
+
+The key change to installer.ts is:
+
+1. Add import near the top (after existing imports):
+   import { hasBundledBackend, setupBundledBackend, getBundleInfo } from "./installer-bundled";
+
+2. In runInstall(), BEFORE the "if (IS_WINDOWS)" block, insert the bundle fast path:
+
+   // NEW: bundled-backend fast path
+   if (hasBundledBackend()) {
+     emit("\u2705 \u68c0\u6d4b\u5230\u5185\u7f6e\u540e\u7aef(bundled backend),\u8df3\u8fc7\u4e0b\u8f7d\u5b89\u88c5...\n");
+     emit(`   Bundle: ${JSON.stringify(getBundleInfo())}\n\n`);
+     try {
+       await setupBundledBackend(emit);
+       emit("\n\u2705 \u5185\u7f6e\u540e\u7aef\u5c31\u7eea!\u53ef\u4ee5\u586b API key \u4e86\u3002\n");
+       return;
+     } catch (err) {
+       emit(`\n\u26a0 \u5185\u7f6e\u540e\u7aef\u521d\u59cb\u5316\u5931\u8d25,\n       emit(`\u26a0 \u5185\u7f6e\u540e\u7aef\u521d\u59cb\u5316\u5931\u8d25,\n             \u964d\u7ea7\u5230\u5728\u7ebf\u5b89\u88c5: ${(err as Error).message}\n\n`);
+       // fall through to the original path
+     }
+   }
+
+3. Add re-export at end of file:
+   export { getBundleInfo } from "./installer-bundled";
